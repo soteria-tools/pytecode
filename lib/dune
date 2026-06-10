@@ -1,0 +1,40 @@
+(library
+ (name pytecode)
+ (public_name pytecode)
+ (libraries unix yojson zarith))
+
+; dump_bytecode.py embedded as an OCaml string. Always generated (it only
+; needs `cat`), so it can never go stale relative to tools/.
+
+(rule
+ (target dump_script.ml)
+ (deps ../tools/dump_bytecode.py)
+ (action
+  (with-stdout-to
+   %{target}
+   (progn
+    (echo
+     "(* Embedded tools/dump_bytecode.py -- generated at build time, do not edit. *)\n")
+    (echo "let source = {pytecode_dump|")
+    (cat ../tools/dump_bytecode.py)
+    (echo "|pytecode_dump}\n")))))
+
+; Opcode tables are generated from the pinned CPython and checked in, so plain
+; builds never need Python. `dune build @gen` re-runs the generator and fails
+; on drift; `dune promote` then updates the checked-in files.
+
+(rule
+ (targets opcode.ml.gen opcode.mli.gen)
+ (deps ../tools/gen_opcodes.py)
+ (action
+  (run python3.13 ../tools/gen_opcodes.py --ml opcode.ml.gen --mli opcode.mli.gen)))
+
+(rule
+ (alias gen)
+ (action
+  (diff opcode.ml opcode.ml.gen)))
+
+(rule
+ (alias gen)
+ (action
+  (diff opcode.mli opcode.mli.gen)))
