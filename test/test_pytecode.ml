@@ -9,7 +9,8 @@ let dump src =
   | Error e -> print_string ("ERROR: " ^ Error.to_string e)
 
 let%expect_test "closure with captured parameter" =
-  dump {|
+  dump
+    {|
 def outer(x):
     def inner():
         nonlocal x
@@ -17,7 +18,8 @@ def outer(x):
         return x
     return inner
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: outer
@@ -57,7 +59,8 @@ def outer(x):
     |}]
 
 let%expect_test "try/except/finally exception table" =
-  dump {|
+  dump
+    {|
 def f(a):
     try:
         return 1 / a
@@ -66,7 +69,8 @@ def f(a):
     finally:
         print("done")
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: f
@@ -136,7 +140,8 @@ def f(a):
     |}]
 
 let%expect_test "loop with break and continue" =
-  dump {|
+  dump
+    {|
 def f(xs):
     total = 0
     for x in xs:
@@ -147,7 +152,8 @@ def f(xs):
         total += x
     return total
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: f
@@ -191,7 +197,8 @@ def f(xs):
     |}]
 
 let%expect_test "match statement" =
-  dump {|
+  dump
+    {|
 def f(p):
     match p:
         case (0, y):
@@ -203,7 +210,8 @@ def f(p):
         case _:
             return None
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: f
@@ -275,7 +283,8 @@ def f(p):
     |}]
 
 let%expect_test "generator, coroutine, async generator flags" =
-  dump {|
+  dump
+    {|
 def gen():
     yield 1
 
@@ -285,7 +294,8 @@ async def coro():
 async def agen():
     yield 1
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: gen, coro, agen
@@ -352,7 +362,8 @@ let%expect_test "inlined comprehension" =
 def f(xs):
     return [x * 2 for x in xs if x]
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: f
@@ -400,7 +411,8 @@ def f(xs):
     |}]
 
 let%expect_test "class body with decorator and method" =
-  dump {|
+  dump
+    {|
 @register
 class C(Base):
     tag = "c"
@@ -408,7 +420,8 @@ class C(Base):
     def method(self):
         return self.tag
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 6, flags 0x0
       names: register, Base, C
@@ -462,7 +475,8 @@ def f(path):
     with open(path) as fh:
         return fh.read()
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
       names: f
@@ -523,7 +537,8 @@ S = "héllo \N{GRINNING FACE}"
 E = ...
 NESTED = ((1, (2, 3)), None, True)
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 5, flags 0x0
       names: BIG, float, FLOATS, C, frozenset, FS, B, S, E, NESTED
@@ -560,7 +575,8 @@ NESTED = ((1, (2, 3)), None, True)
 
 let%expect_test "syntax error" =
   dump "def f(:\n";
-  [%expect {|
+  [%expect
+    {|
     ERROR: <test>:1:7: syntax error: invalid syntax
       def f(:
     |}]
@@ -597,15 +613,14 @@ let%expect_test "EXTENDED_ARG folding and far jumps" =
         (fun { Ast.op; arg } ->
           if Opcode.has_arg op && arg > 255 then incr big_arg;
           if Opcode.is_jump op && not (arg >= 0 && arg < n) then incr bad_jump;
-          match op with
-          | CACHE | EXTENDED_ARG -> stripped_ok := false
-          | _ -> ())
+          match op with CACHE | EXTENDED_ARG -> stripped_ok := false | _ -> ())
         c.instrs)
     code;
   Printf.printf "args >255: %s, jumps in range: %b, no CACHE/EXTENDED_ARG: %b\n"
     (if !big_arg > 0 then "yes" else "NO")
     (!bad_jump = 0) !stripped_ok;
-  [%expect {| args >255: yes, jumps in range: true, no CACHE/EXTENDED_ARG: true |}]
+  [%expect
+    {| args >255: yes, jumps in range: true, no CACHE/EXTENDED_ARG: true |}]
 
 let%expect_test "positions cover every instruction" =
   let code = load_exn "def f(x):\n    return x + 1\n" in
@@ -623,9 +638,7 @@ let%expect_test "lone surrogate string constant survives as WTF-8" =
   let found = ref None in
   iter_codes
     (fun c ->
-      Array.iter
-        (function Ast.Str s -> found := Some s | _ -> ())
-        c.consts)
+      Array.iter (function Ast.Str s -> found := Some s | _ -> ()) c.consts)
     code;
   (match !found with
   | Some s ->
@@ -647,13 +660,13 @@ let%expect_test "batch mode preserves order and isolates failures" =
   let (module B : Backend_intf.S) = Loader.default_backend () in
   B.compile_batch [ good1; bad; good2 ]
   |> List.iter (fun (path, result) ->
-         Printf.printf "%s -> %s\n"
-           (Filename.basename path)
-           (match result with
-           | Ok code -> "ok (" ^ code.Ast.qualname ^ ")"
-           | Error (Error.Python_syntax_error _) -> "syntax error"
-           | Error e -> "ERROR: " ^ Error.to_string e));
-  [%expect {|
+      Printf.printf "%s -> %s\n" (Filename.basename path)
+        (match result with
+        | Ok code -> "ok (" ^ code.Ast.qualname ^ ")"
+        | Error (Error.Python_syntax_error _) -> "syntax error"
+        | Error e -> "ERROR: " ^ Error.to_string e));
+  [%expect
+    {|
     pytecode_b1.py -> ok (<module>)
     pytecode_b2.py -> syntax error
     pytecode_b3.py -> ok (<module>)

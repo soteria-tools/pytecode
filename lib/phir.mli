@@ -1,11 +1,11 @@
 (** Phir — Python High IR.
 
-    A more usable IR obtained by transformation from {!Ast.code}: operands
-    that are statically known (constants, variable reads, NULL markers) are
-    folded {b into} the instructions that consume them, instead of
-    transiting through the operand stack. The operand stack still exists —
-    intermediate results of calls/operators flow through it as {!Stack}
-    operands — but straight-line code becomes direct:
+    A more usable IR obtained by transformation from {!Ast.code}: operands that
+    are statically known (constants, variable reads, NULL markers) are folded
+    {b into} the instructions that consume them, instead of transiting through
+    the operand stack. The operand stack still exists — intermediate results of
+    calls/operators flow through it as {!Stack} operands — but straight-line
+    code becomes direct:
 
     {v
       x = 5            Assign(x, 5)
@@ -15,27 +15,26 @@
 
     {2 Evaluation contract}
 
-    Operands of an instruction are listed in {b push order} (deepest first,
-    i.e. left-to-right in source). Two invariants make interpretation
-    simple and keep CPython semantics:
+    Operands of an instruction are listed in {b push order} (deepest first, i.e.
+    left-to-right in source). Two invariants make interpretation simple and keep
+    CPython semantics:
 
     - {!Stack} operands always form a {b prefix} of an instruction's operand
       list (folding only ever replaces the most recent pushes). Pop them
       right-to-left (the rightmost Stack operand is the top of stack).
-    - Folded operands are evaluated {b left-to-right at the instruction}.
-      This is sound because the transformation only folds a contiguous run
-      of pure-read pushes immediately preceding the consumer, never across
-      a jump target or an exception-table boundary, so evaluation order and
-      raise order are preserved (a folded read can still raise
+    - Folded operands are evaluated {b left-to-right at the instruction}. This
+      is sound because the transformation only folds a contiguous run of
+      pure-read pushes immediately preceding the consumer, never across a jump
+      target or an exception-table boundary, so evaluation order and raise order
+      are preserved (a folded read can still raise
       [NameError]/[UnboundLocalError]).
 
     Jump targets ({!Jump}, {!Cond_jump}, {!For_iter}, {!Send}) and
-    exception-table boundaries are absolute indices into
-    {!field:code.instrs}, exactly as in {!Ast}. [NOP] and [RESUME] are
-    dropped. Superinstructions ([STORE_FAST_STORE_FAST], ...) are expanded.
-    Stack-depth semantics of the exception table are preserved: folding
-    only removes stack traffic strictly inside a protected region, so
-    unwinding to [depth] remains correct. *)
+    exception-table boundaries are absolute indices into {!field:code.instrs},
+    exactly as in {!Ast}. [NOP] and [RESUME] are dropped. Superinstructions
+    ([STORE_FAST_STORE_FAST], ...) are expanded. Stack-depth semantics of the
+    exception table are preserved: folding only removes stack traffic strictly
+    inside a protected region, so unwinding to [depth] remains correct. *)
 
 exception Unsupported of string
 (** Raised by {!of_code} on opcodes that cannot appear in freshly compiled
@@ -160,14 +159,10 @@ and instr =
   | Delete_attr of { obj : value; name : string }
   (* -- calls -- *)
   | Call of { f : value; self : value; args : value array }
-      (** [self] is {!Null} for plain calls; a bound receiver when the
-          callee came from a method-flavored [LOAD_ATTR] *)
-  | Call_kw of {
-      f : value;
-      self : value;
-      args : value array;
-      kw_names : value;
-    }  (** the last [length kw_names] args are keyword values *)
+      (** [self] is {!Null} for plain calls; a bound receiver when the callee
+          came from a method-flavored [LOAD_ATTR] *)
+  | Call_kw of { f : value; self : value; args : value array; kw_names : value }
+      (** the last [length kw_names] args are keyword values *)
   | Call_ex of { f : value; null : value; args : value; kwargs : value option }
   | Intrinsic_1 of intrinsic_1 * value
   | Intrinsic_2 of intrinsic_2 * value * value
@@ -247,9 +242,9 @@ and instr =
   | Get_len
 
 val of_code : Ast.code -> code
-(** Transform bytecode into Phir, recursively (code constants included).
-    Raises {!Unsupported} on opcodes that cannot occur in freshly compiled
-    code of the pinned CPython. *)
+(** Transform bytecode into Phir, recursively (code constants included). Raises
+    {!Unsupported} on opcodes that cannot occur in freshly compiled code of the
+    pinned CPython. *)
 
 val values : instr -> value list
 (** The operand values of an instruction, in push order (analysis aid). *)

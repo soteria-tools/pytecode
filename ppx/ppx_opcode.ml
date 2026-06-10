@@ -63,7 +63,8 @@ let construct_expr ~loc cd =
 let construct_pat ~loc cd =
   B.ppat_construct ~loc { txt = Lident cd.pcd_name.txt; loc } None
 
-let td_type ~loc td = B.ptyp_constr ~loc { txt = Lident td.ptype_name.txt; loc } []
+let td_type ~loc td =
+  B.ptyp_constr ~loc { txt = Lident td.ptype_name.txt; loc } []
 
 let to_string_item ~loc cds =
   let cases =
@@ -118,9 +119,7 @@ let flag_item ~loc td cds (name, attr) =
 let generate_impl ~ctxt (_rec_flag, tds) =
   let loc = Expansion_context.Deriver.derived_item_loc ctxt in
   let td, cds = get_variant ~loc tds in
-  to_string_item ~loc cds
-  :: of_string_item ~loc cds
-  :: all_item ~loc cds
+  to_string_item ~loc cds :: of_string_item ~loc cds :: all_item ~loc cds
   :: List.map (flag_item ~loc td cds) flag_attrs
 
 let val_item ~loc name type_ =

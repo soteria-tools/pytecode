@@ -21,20 +21,20 @@ let parse_opts args =
 
 let () =
   match Array.to_list Sys.argv with
-  | _ :: "dump" :: args ->
+  | _ :: "dump" :: args -> (
       let { python; positions; file } = parse_opts args in
       let backend = Pytecode.Subprocess.make ?python ~positions () in
       let (module B : Pytecode.Backend_intf.S) = backend in
-      (match B.compile_file file with
+      match B.compile_file file with
       | Ok code -> Format.printf "%a@?" Pytecode.Ast.pp_code code
       | Error e ->
           prerr_endline (Pytecode.Error.to_string e);
           exit 1)
-  | _ :: "phir" :: args ->
+  | _ :: "phir" :: args -> (
       let { python; positions; file } = parse_opts args in
       let backend = Pytecode.Subprocess.make ?python ~positions () in
       let (module B : Pytecode.Backend_intf.S) = backend in
-      (match B.compile_file file with
+      match B.compile_file file with
       | Ok code -> (
           match Pytecode.Phir.of_code code with
           | phir -> Format.printf "%a@?" Pytecode.Phir.pp_code phir
@@ -44,9 +44,9 @@ let () =
       | Error e ->
           prerr_endline (Pytecode.Error.to_string e);
           exit 1)
-  | _ :: "json" :: args ->
+  | _ :: "json" :: args -> (
       let { python; positions; file } = parse_opts args in
-      (match Pytecode.Subprocess.raw_dump ?python ~positions file with
+      match Pytecode.Subprocess.raw_dump ?python ~positions file with
       | Ok json -> print_string json
       | Error e ->
           prerr_endline (Pytecode.Error.to_string e);

@@ -27,14 +27,13 @@ let rec mkdir_p dir =
 let read_value file : Ast.code option =
   match In_channel.with_open_bin file In_channel.input_all with
   | exception Sys_error _ -> None
-  | data -> (
+  | data ->
       let hlen = String.length value_header in
-      if String.length data > hlen && String.sub data 0 hlen = value_header
-      then
+      if String.length data > hlen && String.sub data 0 hlen = value_header then
         match (Marshal.from_string data hlen : Ast.code) with
         | code -> Some code
         | exception _ -> None
-      else None)
+      else None
 
 let write_value ~dir file (code : Ast.code) =
   try

@@ -10,7 +10,9 @@ open Pytecode
 
 let python_oneliner code =
   let python = Subprocess.default_python () in
-  let ic = Unix.open_process_in (Filename.quote python ^ " -c " ^ Filename.quote code) in
+  let ic =
+    Unix.open_process_in (Filename.quote python ^ " -c " ^ Filename.quote code)
+  in
   let line = In_channel.input_line ic in
   match (Unix.close_process_in ic, line) with
   | Unix.WEXITED 0, Some line -> line
@@ -44,9 +46,7 @@ let () =
   in
   let backend =
     let base = Subprocess.make () in
-    match cache_dir with
-    | Some dir -> Cache.wrap ~dir base
-    | None -> base
+    match cache_dir with Some dir -> Cache.wrap ~dir base | None -> base
   in
   let (module B : Backend_intf.S) = backend in
   let dir = stdlib_dir () in
@@ -62,7 +62,8 @@ let () =
     Array.iter
       (fun { Ast.op; _ } ->
         incr instrs;
-        Hashtbl.replace opcount op (1 + Option.value ~default:0 (Hashtbl.find_opt opcount op)))
+        Hashtbl.replace opcount op
+          (1 + Option.value ~default:0 (Hashtbl.find_opt opcount op)))
       c.instrs;
     Array.iter (function Ast.Code n -> count n | _ -> ()) c.consts
   in

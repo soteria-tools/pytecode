@@ -1,5 +1,4 @@
 type instr = { op : Opcode.t; arg : int }
-
 type local_kind = Local | Cell | Local_and_cell | Free
 
 type exn_entry = {
@@ -61,7 +60,6 @@ let co_nofree = 0x40
 let co_coroutine = 0x80
 let co_iterable_coroutine = 0x100
 let co_async_generator = 0x200
-
 let test_flag bit c = c.flags land bit <> 0
 let is_optimized = test_flag co_optimized
 let is_generator = test_flag co_generator
@@ -77,8 +75,12 @@ let filter_localsplus pred c =
        (fun (name, kind) -> if pred kind then Some name else None)
        (Array.to_list c.localsplus))
 
-let varnames = filter_localsplus (function Local | Local_and_cell -> true | _ -> false)
-let cellvars = filter_localsplus (function Cell | Local_and_cell -> true | _ -> false)
+let varnames =
+  filter_localsplus (function Local | Local_and_cell -> true | _ -> false)
+
+let cellvars =
+  filter_localsplus (function Cell | Local_and_cell -> true | _ -> false)
+
 let freevars = filter_localsplus (function Free -> true | _ -> false)
 
 (* ------------------------------------------------------------------ *)
@@ -181,8 +183,7 @@ let arg_hint c { op; arg } =
     if idx >= 0 && idx < Array.length c.names then c.names.(idx) else "?"
   in
   let local idx =
-    if idx >= 0 && idx < Array.length c.localsplus then
-      fst c.localsplus.(idx)
+    if idx >= 0 && idx < Array.length c.localsplus then fst c.localsplus.(idx)
     else "?"
   in
   match op with
@@ -211,18 +212,18 @@ let arg_hint c { op; arg } =
 let rec render buf c =
   let pr fmt = Printf.bprintf buf fmt in
   pr "%s (%s:%d)\n" c.qualname c.filename c.firstlineno;
-  pr "  argcount %d (posonly %d, kwonly %d), nlocals %d, stacksize %d, flags 0x%x%s\n"
-    c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize
-    c.flags (flags_repr c.flags);
+  pr
+    "  argcount %d (posonly %d, kwonly %d), nlocals %d, stacksize %d, flags \
+     0x%x%s\n"
+    c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize c.flags
+    (flags_repr c.flags);
   if Array.length c.names > 0 then
     pr "  names: %s\n" (String.concat ", " (Array.to_list c.names));
   if Array.length c.localsplus > 0 then
     pr "  localsplus: %s\n"
       (String.concat ", "
          (Array.to_list
-            (Array.map
-               (fun (n, k) -> n ^ ":" ^ local_kind_repr k)
-               c.localsplus)));
+            (Array.map (fun (n, k) -> n ^ ":" ^ local_kind_repr k) c.localsplus)));
   let prev_line = ref min_int in
   Array.iteri
     (fun i ins ->
@@ -255,8 +256,8 @@ let rec render buf c =
     pr "  exception table:\n";
     Array.iter
       (fun e ->
-        pr "    [%d, %d) -> %d depth=%d%s\n" e.start_idx e.end_idx
-          e.target_idx e.depth
+        pr "    [%d, %d) -> %d depth=%d%s\n" e.start_idx e.end_idx e.target_idx
+          e.depth
           (if e.push_lasti then " lasti" else ""))
       c.exn_table
   end;

@@ -12,7 +12,8 @@ let%expect_test "assignments fold constants and variable reads" =
 x = 5
 y = x
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
          2    0  Assign(name:x, 5)
@@ -27,7 +28,8 @@ def f(a, b):
     c += 1
     return c * 2
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
          2    0  Make_function(<code f>)
@@ -53,7 +55,8 @@ print("hi", 1)
 def g(o, x):
     return o.m(x, 2)
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 4, flags 0x0
          2    0  Call(name:print, null, ['hi', 1])
@@ -73,7 +76,8 @@ def g(o, x):
 
 let%expect_test "nested calls: inner folds, outer takes stack" =
   phir "r = f(g(1))\n";
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 5, flags 0x0
          1    0  Push(name:f)
@@ -85,7 +89,8 @@ let%expect_test "nested calls: inner folds, outer takes stack" =
     |}]
 
 let%expect_test "loop: jumps are instruction indices, condition folded" =
-  phir {|
+  phir
+    {|
 def f(xs):
     total = 0
     for x in xs:
@@ -94,7 +99,8 @@ def f(xs):
         total += x
     return total
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
          2    0  Make_function(<code f>)
@@ -122,14 +128,16 @@ def f(xs):
     |}]
 
 let%expect_test "try/except: folding stops at region boundaries" =
-  phir {|
+  phir
+    {|
 def f(a):
     try:
         return 1 / a
     except ZeroDivisionError:
         return 0
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
          2    0  Make_function(<code f>)
@@ -163,7 +171,8 @@ let%expect_test "function definition with defaults" =
 def f(a, b=1):
     return a + b
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 2, flags 0x0
          2    0  Push((1,))
@@ -182,7 +191,8 @@ def f(a, b=1):
 
 let%expect_test "import folds level and from-list constants" =
   phir "import os.path as p\nfrom sys import argv\n";
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 2, flags 0x0
          1    0  Import_name(os.path, 0, None)
@@ -202,7 +212,8 @@ def f(x):
     g(x, key=1)
     return f"v={x:>10}"
 |};
-  [%expect {|
+  [%expect
+    {|
     <module> (<test>:1)
       argcount 0 (posonly 0, kwonly 0), nlocals 0, stacksize 1, flags 0x0
          2    0  Make_function(<code f>)

@@ -73,7 +73,8 @@ let rec const ctx : json -> Ast.const = function
   | `List xs -> Tuple (Array.of_list (List.map (const ctx) xs))
   | `Assoc fields as j -> (
       match List.assoc_opt "t" fields with
-      | Some (`String "f") -> Float (float_of_hex ctx (tagged_string ctx fields))
+      | Some (`String "f") ->
+          Float (float_of_hex ctx (tagged_string ctx fields))
       | Some (`String "z") ->
           let part name =
             match field ctx fields name with
@@ -92,8 +93,7 @@ let rec const ctx : json -> Ast.const = function
       | _ -> fail ctx ("unknown constant tag in " ^ Yojson.Safe.to_string j))
   | j -> fail ctx ("invalid constant: " ^ shape j)
 
-and instr_row ctx :
-    json -> Ast.instr * int * Ast.positions option = function
+and instr_row ctx : json -> Ast.instr * int * Ast.positions option = function
   | `List (`String opname :: `Int arg :: `Int line :: rest) ->
       let op =
         match Opcode.of_string opname with
@@ -167,11 +167,12 @@ and code ctx : json -> Ast.code = function
         flags = int "flags";
         consts =
           Array.of_list (List.map (const (ctx ^ ".consts")) (list "consts"));
-        names =
-          Array.of_list (List.map (pystr (ctx ^ ".names")) (list "names"));
+        names = Array.of_list (List.map (pystr (ctx ^ ".names")) (list "names"));
         localsplus =
           Array.of_list
-            (List.map (localsplus_row (ctx ^ ".localsplus")) (list "localsplus"));
+            (List.map
+               (localsplus_row (ctx ^ ".localsplus"))
+               (list "localsplus"));
         instrs;
         exn_table =
           Array.of_list (List.map (exn_row (ctx ^ ".exn")) (list "exn"));
@@ -182,9 +183,7 @@ and code ctx : json -> Ast.code = function
 
 let error_of_doc ctx ~python fields =
   let str name =
-    match List.assoc_opt name fields with
-    | Some (`String s) -> s
-    | _ -> ""
+    match List.assoc_opt name fields with Some (`String s) -> s | _ -> ""
   in
   let int name =
     match List.assoc_opt name fields with Some (`Int n) -> n | _ -> -1
@@ -201,11 +200,13 @@ let error_of_doc ctx ~python fields =
         }
   | "io" -> Io_error (str "msg")
   | "version" ->
-      Version_mismatch
-        { expected = expected_python_prefix ^ "x"; got = python }
+      Version_mismatch { expected = expected_python_prefix ^ "x"; got = python }
   | kind ->
       Decode_error
-        { context = ctx; msg = "unknown error kind " ^ Printf.sprintf "%S" kind }
+        {
+          context = ctx;
+          msg = "unknown error kind " ^ Printf.sprintf "%S" kind;
+        }
 
 let code_of_envelope (j : json) : (Ast.code, Error.t) result =
   match j with
@@ -218,13 +219,13 @@ let code_of_envelope (j : json) : (Ast.code, Error.t) result =
             | _ -> "unknown"
           in
           match List.assoc_opt "ok" fields with
-          | Some (`Bool true) ->
+          | Some (`Bool true) -> (
               if not (String.starts_with ~prefix:expected_python_prefix python)
               then
                 Error
                   (Version_mismatch
                      { expected = expected_python_prefix ^ "x"; got = python })
-              else (
+              else
                 match List.assoc_opt "code" fields with
                 | Some code_json -> (
                     try Ok (code "" code_json) with
@@ -232,13 +233,11 @@ let code_of_envelope (j : json) : (Ast.code, Error.t) result =
                         Error (Decode_error { context; msg })
                     | Unknown_op name -> Error (Unknown_opcode name)
                     | Invalid_argument msg | Failure msg ->
-                        Error (Decode_error { context = ""; msg })
-                  )
+                        Error (Decode_error { context = ""; msg }))
                 | None ->
                     Error
                       (Decode_error
-                         { context = "envelope"; msg = "missing code field" })
-                )
+                         { context = "envelope"; msg = "missing code field" }))
           | Some (`Bool false) -> (
               match List.assoc_opt "error" fields with
               | Some (`Assoc err) -> Error (error_of_doc "envelope" ~python err)

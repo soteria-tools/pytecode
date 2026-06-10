@@ -26,16 +26,35 @@
 ; on drift; `dune promote` then updates the checked-in files.
 
 (rule
- (targets opcode.ml.gen opcode.mli.gen)
+ (targets opcode.ml.raw opcode.mli.raw)
  (deps ../tools/gen_opcodes.py)
  (action
   (run
    python3.13
    ../tools/gen_opcodes.py
    --ml
-   opcode.ml.gen
+   opcode.ml.raw
    --mli
-   opcode.mli.gen)))
+   opcode.mli.raw)))
+
+; The generator output is formatted like any other source, so the checked-in
+; files stay ocamlformat-clean and the diff rules compare like with like.
+
+(rule
+ (target opcode.ml.gen)
+ (deps ../.ocamlformat)
+ (action
+  (with-stdout-to
+   %{target}
+   (run ocamlformat --impl --name opcode.ml %{dep:opcode.ml.raw}))))
+
+(rule
+ (target opcode.mli.gen)
+ (deps ../.ocamlformat)
+ (action
+  (with-stdout-to
+   %{target}
+   (run ocamlformat --intf --name opcode.mli %{dep:opcode.mli.raw}))))
 
 (rule
  (alias gen)

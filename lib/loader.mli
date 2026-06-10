@@ -1,8 +1,8 @@
 (** Front door: Python source in, {!Ast.code} out. *)
 
 val default_backend : unit -> (module Backend_intf.S)
-(** The subprocess backend with default configuration (created once,
-    memoized). *)
+(** The subprocess backend with default configuration (created once, memoized).
+*)
 
 val load_file :
   ?backend:(module Backend_intf.S) ->

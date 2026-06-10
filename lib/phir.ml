@@ -61,12 +61,7 @@ type code = {
   positions : Ast.positions array;
 }
 
-and value =
-  | Stack
-  | Null
-  | Const of Ast.const
-  | Code of code
-  | Var of var
+and value = Stack | Null | Const of Ast.const | Code of code | Var of var
 
 and instr =
   | Assign of var * value
@@ -226,9 +221,11 @@ let values : instr -> value list = function
       (f :: self :: Array.to_list args) @ [ kw_names ]
   | Call_ex { f; null; args; kwargs } -> (
       [ f; null; args ] @ match kwargs with Some k -> [ k ] | None -> [])
-  | Raise { exc; cause } ->
-      List.filter_map Fun.id [ exc; cause ]
-  | Build_tuple vs | Build_list vs | Build_set vs | Build_string vs
+  | Raise { exc; cause } -> List.filter_map Fun.id [ exc; cause ]
+  | Build_tuple vs
+  | Build_list vs
+  | Build_set vs
+  | Build_string vs
   | Build_slice vs ->
       Array.to_list vs
   | Build_map pairs ->
@@ -249,7 +246,18 @@ let values : instr -> value list = function
 
 let binop_table =
   [|
-    Add; And; Floor_div; Lshift; Mat_mul; Mul; Mod; Or; Pow; Rshift; Sub; Div;
+    Add;
+    And;
+    Floor_div;
+    Lshift;
+    Mat_mul;
+    Mul;
+    Mod;
+    Or;
+    Pow;
+    Rshift;
+    Sub;
+    Div;
     Xor;
   |]
 
@@ -376,7 +384,7 @@ let rec of_code (ast : Ast.code) : code =
     let { Ast.op; arg } = ast.instrs.(i) in
     let e ins = emit ~old:i ins in
     let name idx = ast.names.(idx) in
-    (match op with
+    match op with
     (* -- foldable pushes: enter the pending window -- *)
     | LOAD_CONST -> push_pending i (value_of_const ast.consts.(arg))
     | LOAD_FAST | LOAD_FAST_CHECK -> push_pending i (Var (Fast arg))
@@ -436,7 +444,9 @@ let rec of_code (ast : Ast.code) : code =
         let idx = arg lsr 5 in
         if idx > 5 then fail ("COMPARE_OP " ^ string_of_int arg);
         let l, r = op2 (operands 2) in
-        e (Compare { op = cmpop_table.(idx); coerce_bool = arg land 16 <> 0; l; r })
+        e
+          (Compare
+             { op = cmpop_table.(idx); coerce_bool = arg land 16 <> 0; l; r })
     | IS_OP ->
         let l, r = op2 (operands 2) in
         e (Is_op { invert = arg = 1; l; r })
@@ -486,8 +496,7 @@ let rec of_code (ast : Ast.code) : code =
     (* -- calls -- *)
     | CALL -> (
         match operands (arg + 2) with
-        | f :: self :: args ->
-            e (Call { f; self; args = Array.of_list args })
+        | f :: self :: args -> e (Call { f; self; args = Array.of_list args })
         | _ -> assert false)
     | CALL_KW -> (
         match operands (arg + 3) with
@@ -672,7 +681,7 @@ let rec of_code (ast : Ast.code) : code =
       | INSTRUMENTED_POP_JUMP_IF_NOT_NONE | INSTRUMENTED_POP_JUMP_IF_TRUE
       | INSTRUMENTED_RESUME | INSTRUMENTED_RETURN_CONST
       | INSTRUMENTED_RETURN_VALUE | INSTRUMENTED_YIELD_VALUE ) as op ->
-        unsupported op)
+        unsupported op
   done;
   flush ();
   let total = Dynarray.length out in
@@ -815,8 +824,9 @@ let var_str lp = function
       else "fast#" ^ string_of_int i
   | Deref i ->
       "deref:"
-      ^ (if i >= 0 && i < Array.length lp then fst lp.(i)
-         else "#" ^ string_of_int i)
+      ^
+      if i >= 0 && i < Array.length lp then fst lp.(i)
+      else "#" ^ string_of_int i
   | Name s -> "name:" ^ s
   | Global s -> "global:" ^ s
 
@@ -863,8 +873,7 @@ let instr_str lp ins =
       app "Load_super_attr" [ v super; v cls; v self; name ]
   | Store_attr { value; obj; name } -> app "Store_attr" [ v value; v obj; name ]
   | Delete_attr { obj; name } -> app "Delete_attr" [ v obj; name ]
-  | Call { f; self; args } ->
-      app "Call" [ v f; v self; "[" ^ vs args ^ "]" ]
+  | Call { f; self; args } -> app "Call" [ v f; v self; "[" ^ vs args ^ "]" ]
   | Call_kw { f; self; args; kw_names } ->
       app "Call_kw" [ v f; v self; "[" ^ vs args ^ "]"; v kw_names ]
   | Call_ex { f; null; args; kwargs } ->
@@ -887,8 +896,7 @@ let instr_str lp ins =
   | End_send -> "End_send"
   | Cleanup_throw -> "Cleanup_throw"
   | Raise { exc; cause } ->
-      app "Raise"
-        (List.filter_map (Option.map v) [ exc; cause ])
+      app "Raise" (List.filter_map (Option.map v) [ exc; cause ])
   | Reraise n -> app "Reraise" [ int n ]
   | Push_exc_info -> "Push_exc_info"
   | Pop_except -> "Pop_except"
@@ -977,8 +985,8 @@ let rec render buf (c : code) =
   pr
     "  argcount %d (posonly %d, kwonly %d), nlocals %d, stacksize %d, flags \
      0x%x%s\n"
-    c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize
-    c.flags (flags_str c.flags);
+    c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize c.flags
+    (flags_str c.flags);
   if Array.length c.localsplus > 0 then
     pr "  localsplus: %s\n"
       (String.concat ", "

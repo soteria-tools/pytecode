@@ -33,7 +33,10 @@ let script_file =
 let with_sigpipe_ignored f =
   match Sys.signal Sys.sigpipe Sys.Signal_ignore with
   | exception (Invalid_argument _ | Sys_error _) -> f () (* e.g. Windows *)
-  | previous -> Fun.protect ~finally:(fun () -> ignore (Sys.signal Sys.sigpipe previous)) f
+  | previous ->
+      Fun.protect
+        ~finally:(fun () -> ignore (Sys.signal Sys.sigpipe previous))
+        f
 
 let spawn argv =
   let prog = resolve_exe argv.(0) in
@@ -70,7 +73,8 @@ let parse_envelope ~out ~err ~code =
   match Yojson.Safe.from_string out with
   | j -> Decode.code_of_envelope j
   | exception _ ->
-      if code <> 0 then Error (Error.Python_failed { exit_code = code; stderr = err })
+      if code <> 0 then
+        Error (Error.Python_failed { exit_code = code; stderr = err })
       else
         Error
           (Error.Decode_error
@@ -87,7 +91,9 @@ let raw_dump ?python ?(positions = true) path =
 let make ?python ?(positions = true) () : (module Backend_intf.S) =
   let python = match python with Some p -> p | None -> default_python () in
   let dump ?stdin_data extra =
-    match run ?stdin_data (Array.of_list (python :: dump_args ~positions extra)) with
+    match
+      run ?stdin_data (Array.of_list (python :: dump_args ~positions extra))
+    with
     | Error _ as e -> e
     | Ok (out, err, code) -> parse_envelope ~out ~err ~code
   in
@@ -96,7 +102,9 @@ let make ?python ?(positions = true) () : (module Backend_intf.S) =
 
     let python_version () =
       let argv =
-        [| python; "-c"; "import sys; print('%d.%d.%d' % sys.version_info[:3])" |]
+        [|
+          python; "-c"; "import sys; print('%d.%d.%d' % sys.version_info[:3])";
+        |]
       in
       match run argv with
       | Error _ as e -> e
@@ -110,14 +118,14 @@ let make ?python ?(positions = true) () : (module Backend_intf.S) =
         | Error _ as e -> e
         | Ok version ->
             Ok
-              (Printf.sprintf "subprocess|python=%s|positions=%b|script=%s|format=%d"
-                 version positions
+              (Printf.sprintf
+                 "subprocess|python=%s|positions=%b|script=%s|format=%d" version
+                 positions
                  (Digest.BLAKE256.to_hex
                     (Digest.BLAKE256.string Dump_script.source))
                  Decode.format_version))
 
     let identity () = Lazy.force identity_memo
-
     let compile_file path = dump [ path ]
 
     let compile_string ?(filename = "<string>") source =

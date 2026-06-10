@@ -10,23 +10,22 @@
       exception-table boundaries are {b absolute instruction indices} into
       {!field:code.instrs}.
 
-    Everything else keeps raw CPython semantics: instruction args index into
-    the code object's tables ([consts]/[names]/[localsplus]), including
-    flag-bit encodings (e.g. LOAD_GLOBAL's low "push NULL" bit, LOAD_ATTR's
-    low method bit, COMPARE_OP's packed operation). *)
+    Everything else keeps raw CPython semantics: instruction args index into the
+    code object's tables ([consts]/[names]/[localsplus]), including flag-bit
+    encodings (e.g. LOAD_GLOBAL's low "push NULL" bit, LOAD_ATTR's low method
+    bit, COMPARE_OP's packed operation). *)
 
 type instr = { op : Opcode.t; arg : int }
-(** A single instruction. [arg] is CPython's raw (EXTENDED_ARG-folded) oparg,
-    or [0] when CPython reports no arg; for jump opcodes ({!Opcode.is_jump})
-    it is the absolute index of the target instruction. *)
+(** A single instruction. [arg] is CPython's raw (EXTENDED_ARG-folded) oparg, or
+    [0] when CPython reports no arg; for jump opcodes ({!Opcode.is_jump}) it is
+    the absolute index of the target instruction. *)
 
 type local_kind =
   | Local  (** plain fast local (in [co_varnames]) *)
-  | Cell
-      (** cell for a variable captured by nested code (in [co_cellvars]) *)
+  | Cell  (** cell for a variable captured by nested code (in [co_cellvars]) *)
   | Local_and_cell
-      (** captured parameter: occupies its argument slot, [MAKE_CELL]
-          converts it in place (in both [co_varnames] and [co_cellvars]) *)
+      (** captured parameter: occupies its argument slot, [MAKE_CELL] converts
+          it in place (in both [co_varnames] and [co_cellvars]) *)
   | Free  (** free variable of this code, bound in an enclosing scope *)
 
 type exn_entry = {
@@ -84,8 +83,8 @@ and code = {
   names : string array;
   localsplus : (string * local_kind) array;
       (** merged fast-locals layout (3.11+): varnames, then cellvars not in
-          varnames, then freevars. All [*_FAST]/[*_DEREF]/[MAKE_CELL] args
-          index this array directly. *)
+          varnames, then freevars. All [*_FAST]/[*_DEREF]/[MAKE_CELL] args index
+          this array directly. *)
   (* code *)
   instrs : instr array;
   exn_table : exn_entry array;  (** sorted by [start_idx], as CPython emits *)
@@ -95,7 +94,7 @@ and code = {
       (** per instruction; [[||]] if dumped without positions *)
 }
 
-(** {2 co_flags accessors} (CO_* bits, stable across versions) *)
+(** {2 co_flags accessors (CO_* bits, stable across versions)} *)
 
 val is_optimized : code -> bool
 (** function-like frame with fast locals (CO_OPTIMIZED) *)
@@ -107,13 +106,13 @@ val has_varargs : code -> bool
 val has_varkw : code -> bool
 val is_nested : code -> bool
 
-(** {2 Derived legacy views} (for tracebacks / inspection) *)
+(** {2 Derived legacy views (for tracebacks / inspection)} *)
 
 val varnames : code -> string array
 val cellvars : code -> string array
 val freevars : code -> string array
 
-(** {2 Pretty-printing} (dis-like; for humans and golden tests) *)
+(** {2 Pretty-printing (dis-like; for humans and golden tests)} *)
 
 val pp_const : Format.formatter -> const -> unit
 val pp_code : Format.formatter -> code -> unit

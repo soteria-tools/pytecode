@@ -6,18 +6,18 @@ type t =
       col : int;
       text : string;
     }
-      (** The source does not compile. [text] is the offending source line
-          ("" when unavailable); [line]/[col] are 1-based ([-1] when
-          unavailable). *)
+      (** The source does not compile. [text] is the offending source line (""
+          when unavailable); [line]/[col] are 1-based ([-1] when unavailable).
+      *)
   | Python_failed of { exit_code : int; stderr : string }
       (** The Python process failed for a reason other than a syntax error
           (interpreter missing, internal error, ...). *)
   | Decode_error of { context : string; msg : string }
-      (** The JSON produced by the dump script does not match the expected
-          wire format. *)
+      (** The JSON produced by the dump script does not match the expected wire
+          format. *)
   | Unknown_opcode of string
-      (** The dump contains an opcode name absent from {!Opcode.t} — the
-          pinned Python and the generated opcode table have drifted. *)
+      (** The dump contains an opcode name absent from {!Opcode.t} — the pinned
+          Python and the generated opcode table have drifted. *)
   | Version_mismatch of { expected : string; got : string }
       (** The Python that produced the dump is not the pinned version. *)
   | Io_error of string
@@ -40,6 +40,5 @@ let to_string = function
          drifted; regenerate with `dune build @gen`)"
         name
   | Version_mismatch { expected; got } ->
-      Printf.sprintf "Python version mismatch: expected %s, got %s" expected
-        got
+      Printf.sprintf "Python version mismatch: expected %s, got %s" expected got
   | Io_error msg -> Printf.sprintf "I/O error: %s" msg

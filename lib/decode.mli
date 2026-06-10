@@ -1,6 +1,6 @@
-(** Shared decoder from the dump script's JSON wire format to {!Ast.code}.
-    Used by every backend (subprocess now, pyml later), so all backends are
-    validated by the same tests. *)
+(** Shared decoder from the dump script's JSON wire format to {!Ast.code}. Used
+    by every backend (subprocess now, pyml later), so all backends are validated
+    by the same tests. *)
 
 val format_version : int
 (** Wire-format version this decoder understands (envelope ["format"]). *)

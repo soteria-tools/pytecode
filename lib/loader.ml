@@ -1,6 +1,5 @@
 let default = lazy (Subprocess.make ())
 let cached_default = lazy (Cache.wrap (Lazy.force default))
-
 let default_backend () = Lazy.force default
 
 let get ~cache = function
