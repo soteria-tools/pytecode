@@ -44,6 +44,14 @@ source.py ──► tools/dump_bytecode.py (pinned 3.13) ──► versioned JSO
 - **`Cache.wrap`** gives `.pyc`-style caching: BLAKE-256 of (backend
   identity, path, source) → marshalled AST. Warm loads never touch Python
   (measured: full stdlib, 1072 files, 0.2 s warm vs 8.5 s cold).
+- **`Phir`** (Python High IR, `pytecode phir foo.py`) is a more usable IR
+  derived from the AST: statically known operands (constants, variable
+  reads) are folded into the consuming instruction (`Assign(x, 5)`,
+  `Binary_op(+, a, b)`, `Call(global:print, null, ['hi'])`), jumps stay
+  instruction indices, `NOP`/`RESUME` are dropped and superinstructions
+  expanded — ~37% fewer instructions than raw bytecode over the stdlib,
+  with CPython evaluation-order and exception semantics preserved (see the
+  contract in `lib/phir.mli`).
 
 ## Requirements
 

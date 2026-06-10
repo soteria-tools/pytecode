@@ -66,10 +66,30 @@ let () =
       c.instrs;
     Array.iter (function Ast.Code n -> count n | _ -> ()) c.consts
   in
+  let phir_instrs = ref 0 and phir_codes = ref 0 in
+  let rec count_phir (c : Phir.code) =
+    incr phir_codes;
+    phir_instrs := !phir_instrs + Array.length c.instrs;
+    Array.iter
+      (fun ins ->
+        List.iter
+          (function Phir.Code n -> count_phir n | _ -> ())
+          (Phir.values ins))
+      c.instrs
+  in
   List.iter
     (fun (path, result) ->
       match result with
-      | Ok code -> count code
+      | Ok code -> (
+          count code;
+          match Phir.of_code code with
+          | phir -> count_phir phir
+          | exception Phir.Unsupported msg ->
+              incr failures;
+              Printf.printf "PHIR FAIL %s: %s\n" path msg
+          | exception exn ->
+              incr failures;
+              Printf.printf "PHIR FAIL %s: %s\n" path (Printexc.to_string exn))
       | Error e ->
           incr failures;
           Printf.printf "FAIL %s: %s\n" path (Error.to_string e))
@@ -80,6 +100,9 @@ let () =
     (List.length files) dt
     (1000. *. dt /. float_of_int (max 1 (List.length files)))
     !codes !instrs;
+  Printf.printf "phir: %d code objects | %d instructions (%.0f%% of bytecode)\n"
+    !phir_codes !phir_instrs
+    (100. *. float_of_int !phir_instrs /. float_of_int (max 1 !instrs));
   Printf.printf "opcode coverage: %d/%d used; unused:\n" used
     (Array.length Opcode.all);
   Array.iter

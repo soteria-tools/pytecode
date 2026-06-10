@@ -1,6 +1,6 @@
 (library
  (name pytecode_tests)
- (modules test_pytecode)
+ (modules test_pytecode test_phir)
  (inline_tests)
  (preprocess
   (pps ppx_expect))
