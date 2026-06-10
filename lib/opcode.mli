@@ -159,10 +159,8 @@ type t =
   | UNPACK_SEQUENCE
   | WITH_EXCEPT_START
   | YIELD_VALUE
-[@@deriving opcode]
+[@@deriving opcode, eq, ord]
 
-val equal : t -> t -> bool
-val compare : t -> t -> int
 val hash : t -> int
 val pp : Format.formatter -> t -> unit
 

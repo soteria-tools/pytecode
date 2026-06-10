@@ -140,10 +140,8 @@ type t =
   | UNPACK_SEQUENCE [@has_arg]
   | WITH_EXCEPT_START
   | YIELD_VALUE [@has_arg]
-[@@deriving opcode]
+[@@deriving opcode, eq, ord]
 
-let equal (a : t) (b : t) = a = b
-let compare (a : t) (b : t) = Stdlib.compare a b
 let hash (x : t) = Hashtbl.hash x
 let pp fmt x = Format.pp_print_string fmt (to_string x)
 

@@ -3,8 +3,7 @@
  (public_name pytecode)
  (libraries unix yojson zarith)
  (preprocess
-  (per_module
-   ((pps ppx_opcode) opcode))))
+  (pps ppx_opcode ppx_deriving.std)))
 
 ; dump_bytecode.py embedded as an OCaml string. Always generated (it only
 ; needs `cat`), so it can never go stale relative to tools/.
@@ -30,7 +29,13 @@
  (targets opcode.ml.gen opcode.mli.gen)
  (deps ../tools/gen_opcodes.py)
  (action
-  (run python3.13 ../tools/gen_opcodes.py --ml opcode.ml.gen --mli opcode.mli.gen)))
+  (run
+   python3.13
+   ../tools/gen_opcodes.py
+   --ml
+   opcode.ml.gen
+   --mli
+   opcode.mli.gen)))
 
 (rule
  (alias gen)

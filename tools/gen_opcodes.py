@@ -41,12 +41,28 @@ def collect():
 
     props = [
         ("has_arg", prop(dis.hasarg), "[i.arg] is meaningful (HAVE_ARGUMENT)."),
-        ("is_jump", prop(dis.hasjump), "the arg is a jump target (in pytecode: an absolute instruction index)."),
+        (
+            "is_jump",
+            prop(dis.hasjump),
+            "the arg is a jump target (in pytecode: an absolute instruction index).",
+        ),
         ("has_const", prop(dis.hasconst), "the arg indexes [code.consts]."),
-        ("has_name", prop(dis.hasname), "the arg indexes [code.names] (possibly with low flag bits, e.g. LOAD_GLOBAL/LOAD_ATTR)."),
+        (
+            "has_name",
+            prop(dis.hasname),
+            "the arg indexes [code.names] (possibly with low flag bits, e.g. LOAD_GLOBAL/LOAD_ATTR).",
+        ),
         ("has_local", prop(dis.haslocal), "the arg indexes [code.localsplus]."),
-        ("has_free", prop(dis.hasfree), "the arg indexes [code.localsplus] (cell/free slot)."),
-        ("has_exc", prop(dis.hasexc), "intrinsic exception-related opcode (dis.hasexc)."),
+        (
+            "has_free",
+            prop(dis.hasfree),
+            "the arg indexes [code.localsplus] (cell/free slot).",
+        ),
+        (
+            "has_exc",
+            prop(dis.hasexc),
+            "intrinsic exception-related opcode (dis.hasexc).",
+        ),
     ]
 
     # Version-specific display tables used by the pretty-printer only.
@@ -75,25 +91,23 @@ def variant(real, props=None):
                 " [@%s]" % name for name, members, _doc in props if n in members
             )
         lines.append("  | %s%s" % (n, attrs))
-    return "type t =\n" + "\n".join(lines) + "\n[@@deriving opcode]\n"
+    return "type t =\n" + "\n".join(lines) + "\n[@@deriving opcode, eq, ord]\n"
 
 
 def gen_ml(real, props, nb_ops, cmp_ops, version):
     out = [HEADER % version]
     out.append(variant(real, props))
 
-    out.append("let equal (a : t) (b : t) = a = b")
-    out.append("let compare (a : t) (b : t) = Stdlib.compare a b")
     out.append("let hash (x : t) = Hashtbl.hash x")
     out.append("let pp fmt x = Format.pp_print_string fmt (to_string x)")
     out.append("")
 
     out.append('let python_version = "%s"' % version)
     out.append("")
-    out.append("(* Display tables for the pretty-printer (BINARY_OP / COMPARE_OP args). *)")
     out.append(
-        "let binary_op_repr = [| %s |]" % "; ".join('"%s"' % s for s in nb_ops)
+        "(* Display tables for the pretty-printer (BINARY_OP / COMPARE_OP args). *)"
     )
+    out.append("let binary_op_repr = [| %s |]" % "; ".join('"%s"' % s for s in nb_ops))
     out.append("let cmp_op_repr = [| %s |]" % "; ".join('"%s"' % s for s in cmp_ops))
     return "\n".join(out) + "\n"
 
@@ -103,8 +117,9 @@ def gen_mli(real, props, version):
     out.append("(** CPython opcodes, as a pure OCaml variant.")
     out.append("")
     out.append("    Union of all real opcodes (numeric value < 256) of the supported")
-    out.append("    CPython versions (currently: %s). Pseudo-opcodes never survive"
-               % version)
+    out.append(
+        "    CPython versions (currently: %s). Pseudo-opcodes never survive" % version
+    )
     out.append("    assembly and are excluded; specialized (adaptive) opcodes never")
     out.append("    appear in freshly compiled code.")
     out.append("")
@@ -116,8 +131,6 @@ def gen_mli(real, props, version):
     out.append("*)")
     out.append("")
     out.append(variant(real))
-    out.append("val equal : t -> t -> bool")
-    out.append("val compare : t -> t -> int")
     out.append("val hash : t -> int")
     out.append("val pp : Format.formatter -> t -> unit")
     out.append("")
