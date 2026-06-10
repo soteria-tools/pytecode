@@ -6,7 +6,19 @@
     Union of all real opcodes (numeric value < 256) of the supported
     CPython versions (currently: 3.13.5). Pseudo-opcodes never survive
     assembly and are excluded; specialized (adaptive) opcodes never
-    appear in freshly compiled code. *)
+    appear in freshly compiled code.
+
+    [@@deriving opcode] declares [to_string], [of_string], [all]
+    (declaration order, i.e. alphabetical), and one predicate per
+    flag attribute:
+    - [has_arg]: [i.arg] is meaningful (HAVE_ARGUMENT).
+    - [is_jump]: the arg is a jump target (in pytecode: an absolute instruction index).
+    - [has_const]: the arg indexes [code.consts].
+    - [has_name]: the arg indexes [code.names] (possibly with low flag bits, e.g. LOAD_GLOBAL/LOAD_ATTR).
+    - [has_local]: the arg indexes [code.localsplus].
+    - [has_free]: the arg indexes [code.localsplus] (cell/free slot).
+    - [has_exc]: intrinsic exception-related opcode (dis.hasexc).
+*)
 
 type t =
   | BEFORE_ASYNC_WITH
@@ -147,39 +159,12 @@ type t =
   | UNPACK_SEQUENCE
   | WITH_EXCEPT_START
   | YIELD_VALUE
-
-val to_string : t -> string
-
-val of_string : string -> t option
+[@@deriving opcode]
 
 val equal : t -> t -> bool
 val compare : t -> t -> int
 val hash : t -> int
 val pp : Format.formatter -> t -> unit
-
-val all : t array
-(** All opcodes, sorted alphabetically. *)
-
-val has_arg : t -> bool
-(** [i.arg] is meaningful (HAVE_ARGUMENT). *)
-
-val is_jump : t -> bool
-(** the arg is a jump target (in pytecode: an absolute instruction index). *)
-
-val has_const : t -> bool
-(** the arg indexes [code.consts]. *)
-
-val has_name : t -> bool
-(** the arg indexes [code.names] (possibly with low flag bits, e.g. LOAD_GLOBAL/LOAD_ATTR). *)
-
-val has_local : t -> bool
-(** the arg indexes [code.localsplus]. *)
-
-val has_free : t -> bool
-(** the arg indexes [code.localsplus] (cell/free slot). *)
-
-val has_exc : t -> bool
-(** intrinsic exception-related opcode (dis.hasexc). *)
 
 val python_version : string
 (** Full version of the CPython these tables were generated from. *)

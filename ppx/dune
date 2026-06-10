@@ -1,0 +1,7 @@
+(library
+ (name ppx_opcode)
+ (public_name pytecode.ppx_opcode)
+ (kind ppx_deriver)
+ (preprocess
+  (pps ppxlib.metaquot))
+ (libraries ppxlib))

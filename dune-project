@@ -20,4 +20,5 @@
   (ocaml (>= 5.2))
   (yojson (>= 2.0))
   (zarith (>= 1.12))
+  (ppxlib (>= 0.32))
   (ppx_expect :with-test)))

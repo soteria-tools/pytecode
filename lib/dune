@@ -1,7 +1,10 @@
 (library
  (name pytecode)
  (public_name pytecode)
- (libraries unix yojson zarith))
+ (libraries unix yojson zarith)
+ (preprocess
+  (per_module
+   ((pps ppx_opcode) opcode))))
 
 ; dump_bytecode.py embedded as an OCaml string. Always generated (it only
 ; needs `cat`), so it can never go stale relative to tools/.

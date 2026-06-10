@@ -62,7 +62,10 @@ To move to a new CPython:
 2. Regenerate the opcode tables: `dune build @gen && dune promote`
    (run under the new `python3.13`/`python3.14`). The variant is a union
    over supported versions; opcode *names* are the wire format, so numeric
-   renumbering between versions is irrelevant.
+   renumbering between versions is irrelevant. The generated file is just
+   the variant with `[@has_arg]`-style flag attributes — the in-tree
+   `[@@deriving opcode]` ppx (`ppx/`) derives `to_string`/`of_string`/
+   `all`/`has_*` from them.
 3. `dune runtest` (golden outputs may shift with compiler changes — review
    and promote) and `dune build @stdlib` (acceptance gate: every stdlib
    module must round-trip with zero unknown opcodes).
