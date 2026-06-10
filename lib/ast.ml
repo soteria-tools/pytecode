@@ -241,8 +241,15 @@ let rec render buf c =
         | Some h -> Printf.sprintf "  (%s)" h
         | None -> ""
       in
-      pr "  %4s %4d  %-26s %s%s\n" line_label i (Opcode.to_string ins.op)
-        arg_str hint)
+      let row =
+        Printf.sprintf "  %4s %4d  %-26s %s%s" line_label i
+          (Opcode.to_string ins.op) arg_str hint
+      in
+      let len = ref (String.length row) in
+      while !len > 0 && row.[!len - 1] = ' ' do
+        decr len
+      done;
+      pr "%s\n" (String.sub row 0 !len))
     c.instrs;
   if Array.length c.exn_table > 0 then begin
     pr "  exception table:\n";
