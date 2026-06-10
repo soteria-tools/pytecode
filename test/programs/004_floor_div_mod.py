@@ -1,0 +1,5 @@
+print(7 // 2, 7 % 2)
+print(-7 // 2, -7 % 2)
+print(7 // -2, 7 % -2)
+print(-7 // -2, -7 % -2)
+print(divmod(13, 4), divmod(-13, 4))

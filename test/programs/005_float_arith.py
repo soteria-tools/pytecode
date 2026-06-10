@@ -1,0 +1,8 @@
+print(0.5 + 0.25)
+print(2.0)
+print(1 / 3)
+print(7 / 2)
+print(3.5 // 2.0, 3.5 % 2.0)
+print(2.5 * 4)
+print(1e10)
+print(-0.0)

@@ -1,0 +1,5 @@
+print(pow(2, 10))
+print(pow(2, -2))
+print(2 ** 0.5)
+print((-8) ** 2, -8 ** 2)
+print(abs(-5), abs(5), abs(-2.5))

@@ -1,0 +1,11 @@
+pi = 3.14159265
+print(f"{pi:.2f}")
+print(f"{pi:10.3f}|")
+print(f"{42:5d}|")
+print(f"{42:<5}|{42:>5}|{42:^6}|")
+print(f"{42:05d}")
+print(f"{255:x} {255:X} {255:o} {255:b}")
+print(f"{1234567:,}")
+print(f"{0.25:%}")
+print("{}-{}".format(1, 2))
+print("{1}{0}".format("a", "b"))

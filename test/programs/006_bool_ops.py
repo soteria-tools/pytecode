@@ -1,0 +1,6 @@
+print(True, False)
+print(True and False, True or False)
+print(not True)
+print(True + True)
+print(bool(0), bool(3), bool(""), bool("x"))
+print(bool([]), bool([0]))

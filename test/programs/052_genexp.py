@@ -1,0 +1,6 @@
+print(sum(x * x for x in range(10)))
+print(max(len(w) for w in ["a", "abc", "ab"]))
+g = (x * 2 for x in range(4))
+print(next(g), next(g))
+print(list(g))
+print(any(x > 8 for x in range(10)), all(x < 5 for x in range(10)))

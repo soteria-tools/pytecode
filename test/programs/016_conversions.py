@@ -1,0 +1,5 @@
+print(int("42"), int(3.9), int(-3.9), int(True))
+print(str(42), str(3.5), str(True), str(None))
+print(float(2), float("1.5"))
+print(int("ff", 16), int("101", 2))
+print(round(3.7), round(-3.7), round(2.5), round(3.5))

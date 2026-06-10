@@ -1,0 +1,8 @@
+print(repr("plain"))
+print(repr("it's"))
+print(repr('say "hi"'))
+print(repr("both ' and \""))
+print(repr("tab\tnewline\n"))
+print(repr(""))
+print(["it's", 'say "hi"'])
+print(repr(None), repr(True), repr(3.0), repr((1, "a")))

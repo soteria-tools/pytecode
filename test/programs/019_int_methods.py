@@ -1,0 +1,5 @@
+print((255).bit_length())
+print((0).bit_length())
+print(int.bit_length(7))
+print((10).__add__(5))
+print((3.5).is_integer(), (4.0).is_integer())

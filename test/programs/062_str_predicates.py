@@ -1,0 +1,8 @@
+print("hello".startswith("he"), "hello".endswith("lo"))
+print("hello".find("ll"), "hello".find("z"))
+print("hello".index("e"))
+print("abc123".isdigit(), "123".isdigit())
+print("abc".isalpha(), "ab1".isalpha())
+print("HELLO".isupper(), "hello".islower())
+print("hello world".title())
+print("x".center(5, "-"), "7".zfill(3), "ab".ljust(4, "."), "ab".rjust(4))

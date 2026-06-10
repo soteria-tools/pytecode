@@ -1,0 +1,5 @@
+print("tab\there")
+print("newline\nhere")
+print("quote\"and'mixed")
+print('single\'quote')
+print("back\\slash")

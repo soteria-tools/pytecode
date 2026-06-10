@@ -1,0 +1,7 @@
+print("key=value".partition("="))
+print("no-sep".partition("="))
+print("a.b.c".rpartition("."))
+print("aaa".count("a"), "aaa".count("aa"))
+print("hello\nworld\n".splitlines())
+print("  x  ".rstrip(), "  x  ".lstrip())
+print("abc".capitalize(), "hello world".swapcase())
