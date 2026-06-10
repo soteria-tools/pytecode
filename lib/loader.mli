@@ -5,10 +5,16 @@ val default_backend : unit -> (module Backend_intf.S)
     memoized). *)
 
 val load_file :
-  ?backend:(module Backend_intf.S) -> string -> (Ast.code, Error.t) result
+  ?backend:(module Backend_intf.S) ->
+  ?cache:bool ->
+  string ->
+  (Ast.code, Error.t) result
+(** [cache] (default [false]): wrap the backend in {!Cache} at
+    {!Cache.default_dir}. *)
 
 val load_string :
   ?backend:(module Backend_intf.S) ->
+  ?cache:bool ->
   ?filename:string ->
   string ->
   (Ast.code, Error.t) result

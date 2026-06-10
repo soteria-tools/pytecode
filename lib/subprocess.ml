@@ -104,6 +104,20 @@ let make ?python ?(positions = true) () : (module Backend_intf.S) =
       | Ok (_, err, code) ->
           Error (Python_failed { exit_code = code; stderr = err })
 
+    let identity_memo =
+      lazy
+        (match python_version () with
+        | Error _ as e -> e
+        | Ok version ->
+            Ok
+              (Printf.sprintf "subprocess|python=%s|positions=%b|script=%s|format=%d"
+                 version positions
+                 (Digest.BLAKE256.to_hex
+                    (Digest.BLAKE256.string Dump_script.source))
+                 Decode.format_version))
+
+    let identity () = Lazy.force identity_memo
+
     let compile_file path = dump [ path ]
 
     let compile_string ?(filename = "<string>") source =

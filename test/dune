@@ -1,6 +1,20 @@
 (library
  (name pytecode_tests)
+ (modules test_pytecode)
  (inline_tests)
  (preprocess
   (pps ppx_expect))
  (libraries pytecode))
+
+; Acceptance gate, not part of the default runtest (it dumps the entire
+; stdlib of the pinned CPython, ~10s): dune build @stdlib
+
+(executable
+ (name stdlib_sweep)
+ (modules stdlib_sweep)
+ (libraries pytecode unix))
+
+(rule
+ (alias stdlib)
+ (action
+  (run %{exe:stdlib_sweep.exe})))

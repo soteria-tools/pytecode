@@ -8,6 +8,12 @@ module type S = sig
   val python_version : unit -> (string, Error.t) result
   (** Full version of the CPython this backend compiles with. *)
 
+  val identity : unit -> (string, Error.t) result
+  (** A string capturing everything that affects this backend's output for a
+      given source: backend name and configuration, dump-script hash, full
+      Python version, wire-format version. Cache layers key on
+      [(identity, path, source)]. *)
+
   val compile_file : string -> (Ast.code, Error.t) result
 
   val compile_string : ?filename:string -> string -> (Ast.code, Error.t) result
