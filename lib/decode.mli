@@ -9,7 +9,7 @@ val expected_python_prefix : string
 (** Pinned CPython version prefix, e.g. ["3.13."]. Envelopes produced by any
     other version are rejected with {!Error.Version_mismatch}. *)
 
-val code_of_envelope : Yojson.Safe.t -> (Ast.code, Error.t) result
+val code_of_envelope : Yojson.Safe.t -> (Ast.instr Ast.code, Error.t) result
 (** Decode one envelope ([{"format": ..., "python": ..., "ok": ..., ...}]). *)
 
 val envelope_file : Yojson.Safe.t -> string option

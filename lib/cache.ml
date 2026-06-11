@@ -12,7 +12,7 @@ let default_dir () =
 (* Bumped whenever Ast.code changes incompatibly. The OCaml version is part
    of the value header because Marshal output is not stable across compiler
    versions. *)
-let value_header = "PYTECODE-CACHE-1|" ^ Sys.ocaml_version ^ "\n"
+let value_header = "PYTECODE-CACHE-2|" ^ Sys.ocaml_version ^ "\n"
 
 let key ~identity ~path ~source =
   Digest.BLAKE256.to_hex
@@ -24,18 +24,18 @@ let rec mkdir_p dir =
     mkdir_p (Filename.dirname dir);
     try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
-let read_value file : Ast.code option =
+let read_value file : Ast.instr Ast.code option =
   match In_channel.with_open_bin file In_channel.input_all with
   | exception Sys_error _ -> None
   | data ->
       let hlen = String.length value_header in
       if String.length data > hlen && String.sub data 0 hlen = value_header then
-        match (Marshal.from_string data hlen : Ast.code) with
+        match (Marshal.from_string data hlen : Ast.instr Ast.code) with
         | code -> Some code
         | exception _ -> None
       else None
 
-let write_value ~dir file (code : Ast.code) =
+let write_value ~dir file (code : Ast.instr Ast.code) =
   try
     mkdir_p dir;
     let tmp = Filename.temp_file ~temp_dir:dir "pytecode_" ".tmp" in

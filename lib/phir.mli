@@ -100,26 +100,14 @@ type intrinsic_2 =
     operands and pushes its result (if it has one) onto the operand stack.
     Operands are in push order. *)
 
-type code = {
-  filename : string;
-  name : string;
-  qualname : string;
-  docstring : string option;
-      (** [co_consts.(0)] when it is a string — what [MAKE_FUNCTION] exposes as
-          [__doc__] (Phir inlines constants, so it must be carried here) *)
-  firstlineno : int;
-  argcount : int;
-  posonlyargcount : int;
-  kwonlyargcount : int;
-  nlocals : int;
-  stacksize : int;  (** upper bound (folding only shrinks the real max) *)
-  flags : int;
-  localsplus : (string * Ast.local_kind) array;
-  instrs : instr array;
-  exn_table : Ast.exn_entry array;
-  lines : int array;
-  positions : Ast.positions array;
-}
+type code = instr Ast.code
+(** The same frame, debug-info and exception-table shape as raw {!Ast.code},
+    carrying Phir instructions. Because Phir inlines constants and variable
+    reads, the [consts] and [names] tables are left empty; the lone surviving
+    constant — the docstring (what [MAKE_FUNCTION] exposes as [__doc__]) — is
+    copied into [Ast.code.docstring]. [stacksize] is an upper bound (folding
+    only shrinks the real max). [Ast.code] flag accessors ([Ast.is_generator],
+    ...) and jump/exception-table indices apply unchanged. *)
 
 and value =
   | Stack  (** pop the operand stack *)
@@ -244,21 +232,13 @@ and instr =
   | Match_keys  (** peeks subject and keys, pushes values or None *)
   | Get_len
 
-val of_code : Ast.code -> code
+val of_code : Ast.instr Ast.code -> code
 (** Transform bytecode into Phir, recursively (code constants included). Raises
     {!Unsupported} on opcodes that cannot occur in freshly compiled code of the
     pinned CPython. *)
 
 val values : instr -> value list
 (** The operand values of an instruction, in push order (analysis aid). *)
-
-(** {2 co_flags accessors} *)
-
-val is_generator : code -> bool
-val is_coroutine : code -> bool
-val is_async_generator : code -> bool
-val has_varargs : code -> bool
-val has_varkw : code -> bool
 
 (** {2 Pretty-printing} *)
 

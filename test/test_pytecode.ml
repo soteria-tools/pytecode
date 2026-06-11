@@ -590,7 +590,7 @@ let load_exn src =
   | Ok code -> code
   | Error e -> failwith (Error.to_string e)
 
-let rec iter_codes f (c : Ast.code) =
+let rec iter_codes f (c : Ast.instr Ast.code) =
   f c;
   Array.iter (function Ast.Code n -> iter_codes f n | _ -> ()) c.consts
 

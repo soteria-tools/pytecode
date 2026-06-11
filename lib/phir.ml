@@ -43,25 +43,11 @@ type intrinsic_2 =
   | Set_function_type_params
   | Set_typeparam_default
 
-type code = {
-  filename : string;
-  name : string;
-  qualname : string;
-  docstring : string option;
-  firstlineno : int;
-  argcount : int;
-  posonlyargcount : int;
-  kwonlyargcount : int;
-  nlocals : int;
-  stacksize : int;
-  flags : int;
-  localsplus : (string * Ast.local_kind) array;
-  instrs : instr array;
-  exn_table : Ast.exn_entry array;
-  lines : int array;
-  positions : Ast.positions array;
-}
-
+(* The same frame/debug/exception-table shape as raw bytecode (see {!Ast.code}),
+   but carrying Phir instructions. Phir inlines constants and variable reads, so
+   the [consts]/[names] tables are left empty; the lone surviving constant, the
+   docstring, is copied into [docstring]. *)
+type code = instr Ast.code
 and value = Stack | Null | Const of Ast.const | Code of code | Var of var
 
 and instr =
@@ -159,13 +145,6 @@ and instr =
   | Match_sequence
   | Match_keys
   | Get_len
-
-let test_flag bit c = c.flags land bit <> 0
-let is_generator = test_flag 0x20
-let is_coroutine = test_flag 0x80
-let is_async_generator = test_flag 0x200
-let has_varargs = test_flag 0x4
-let has_varkw = test_flag 0x8
 
 let values : instr -> value list = function
   | Assign (_, v)
@@ -284,7 +263,7 @@ let rec pair_up = function
   | k :: v :: tl -> (k, v) :: pair_up tl
   | _ -> assert false
 
-let rec of_code (ast : Ast.code) : code =
+let rec of_code (ast : Ast.instr Ast.code) : code =
   let fail msg = raise (Unsupported (ast.qualname ^ ": " ^ msg)) in
   let unsupported (op : Opcode.t) =
     fail ("unsupported opcode " ^ Opcode.to_string op)
@@ -728,13 +707,12 @@ let rec of_code (ast : Ast.code) : code =
       | _ -> ())
     instrs;
   {
-    filename = ast.filename;
+    (* Same frame as the input; constants and names are folded into the
+       instructions, so their tables become empty. *)
+    Ast.filename = ast.filename;
     name = ast.name;
     qualname = ast.qualname;
-    docstring =
-      (if Array.length ast.consts > 0 then
-         match ast.consts.(0) with Ast.Str s -> Some s | _ -> None
-       else None);
+    docstring = ast.docstring;
     firstlineno = ast.firstlineno;
     argcount = ast.argcount;
     posonlyargcount = ast.posonlyargcount;
@@ -742,6 +720,8 @@ let rec of_code (ast : Ast.code) : code =
     nlocals = ast.nlocals;
     stacksize = ast.stacksize;
     flags = ast.flags;
+    consts = [||];
+    names = [||];
     localsplus = ast.localsplus;
     instrs;
     exn_table;
@@ -965,82 +945,18 @@ let instr_str lp ins =
   | Match_keys -> "Match_keys"
   | Get_len -> "Get_len"
 
-let flags_str flags =
-  let names =
-    List.filter_map
-      (fun (bit, name) -> if flags land bit <> 0 then Some name else None)
-      [
-        (0x1, "OPTIMIZED");
-        (0x2, "NEWLOCALS");
-        (0x4, "VARARGS");
-        (0x8, "VARKEYWORDS");
-        (0x10, "NESTED");
-        (0x20, "GENERATOR");
-        (0x40, "NOFREE");
-        (0x80, "COROUTINE");
-        (0x100, "ITERABLE_COROUTINE");
-        (0x200, "ASYNC_GENERATOR");
-      ]
-  in
-  match names with [] -> "" | _ -> " [" ^ String.concat " " names ^ "]"
-
-let rec render buf (c : code) =
-  let pr fmt = Printf.bprintf buf fmt in
-  pr "%s (%s:%d)\n" c.qualname c.filename c.firstlineno;
-  pr
-    "  argcount %d (posonly %d, kwonly %d), nlocals %d, stacksize %d, flags \
-     0x%x%s\n"
-    c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize c.flags
-    (flags_str c.flags);
-  if Array.length c.localsplus > 0 then
-    pr "  localsplus: %s\n"
-      (String.concat ", "
-         (Array.to_list
-            (Array.map
-               (fun (n, k) ->
-                 n ^ ":"
-                 ^
-                 match k with
-                 | Ast.Local -> "local"
-                 | Cell -> "cell"
-                 | Local_and_cell -> "local+cell"
-                 | Free -> "free")
-               c.localsplus)));
-  let prev_line = ref min_int in
-  Array.iteri
-    (fun i ins ->
-      let line = if i < Array.length c.lines then c.lines.(i) else -1 in
-      let label =
-        if line <> !prev_line && line >= 0 then (
-          prev_line := line;
-          string_of_int line)
-        else ""
-      in
-      pr "  %4s %4d  %s\n" label i (instr_str c.localsplus ins))
-    c.instrs;
-  if Array.length c.exn_table > 0 then begin
-    pr "  exception table:\n";
-    Array.iter
-      (fun (en : Ast.exn_entry) ->
-        pr "    [%d, %d) -> %d depth=%d%s\n" en.start_idx en.end_idx
-          en.target_idx en.depth
-          (if en.push_lasti then " lasti" else ""))
-      c.exn_table
-  end;
-  Array.iter
-    (fun ins ->
-      List.iter
-        (function
-          | Code nested ->
-              pr "\nDisassembly of %s:\n" nested.qualname;
-              render buf nested
-          | _ -> ())
-        (values ins))
-    c.instrs
-
+(* Reuse the shared bytecode renderer: Phir only supplies its instruction column
+   and how to find nested code objects (which live inside instruction operands
+   now that constants are folded, not in a [consts] table). *)
 let pp_code fmt c =
+  let render_instr (c : code) ins = instr_str c.localsplus ins in
+  let children (c : code) =
+    Array.to_list c.instrs
+    |> List.concat_map (fun ins ->
+        List.filter_map (function Code n -> Some n | _ -> None) (values ins))
+  in
   let buf = Buffer.create 4096 in
-  render buf c;
+  Ast.render_generic ~render_instr ~children buf c;
   Format.pp_print_string fmt (Buffer.contents buf)
 
 let instr_to_string = instr_str

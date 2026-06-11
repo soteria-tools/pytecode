@@ -62,14 +62,21 @@ type const =
   | Frozenset of const array
       (** element order: deterministic (sorted by encoded form), {b not}
           CPython's iteration order — semantically a set *)
-  | Code of code
+  | Code of instr code
   | Ellipsis
 
-and code = {
+(* A code object, parameterized over its instruction representation so derived
+   IRs (e.g. Phir) reuse the same frame, debug-info and exception-table shape —
+   and the shared [render_generic] pretty-printer. Raw bytecode is [instr code];
+   IRs that fold constants in (e.g. Phir) leave [consts]/[names] empty. *)
+and 'i code = {
   (* identity *)
   filename : string;
   name : string;
   qualname : string;
+  docstring : string option;
+      (** [co_consts.(0)] when it is a string. Carried explicitly because IRs
+          that inline constants (e.g. {!Phir}) drop the [consts] table. *)
   firstlineno : int;
   (* signature / frame shape *)
   argcount : int;
@@ -86,7 +93,7 @@ and code = {
           varnames, then freevars. All [*_FAST]/[*_DEREF]/[MAKE_CELL] args index
           this array directly. *)
   (* code *)
-  instrs : instr array;
+  instrs : 'i array;
   exn_table : exn_entry array;  (** sorted by [start_idx], as CPython emits *)
   (* debug info, struct-of-arrays so the hot loop never touches it *)
   lines : int array;  (** per instruction; [-1] = no line *)
@@ -96,23 +103,34 @@ and code = {
 
 (** {2 co_flags accessors (CO_* bits, stable across versions)} *)
 
-val is_optimized : code -> bool
+val is_optimized : 'i code -> bool
 (** function-like frame with fast locals (CO_OPTIMIZED) *)
 
-val is_generator : code -> bool
-val is_coroutine : code -> bool
-val is_async_generator : code -> bool
-val has_varargs : code -> bool
-val has_varkw : code -> bool
-val is_nested : code -> bool
+val is_generator : 'i code -> bool
+val is_coroutine : 'i code -> bool
+val is_async_generator : 'i code -> bool
+val has_varargs : 'i code -> bool
+val has_varkw : 'i code -> bool
+val is_nested : 'i code -> bool
 
 (** {2 Derived legacy views (for tracebacks / inspection)} *)
 
-val varnames : code -> string array
-val cellvars : code -> string array
-val freevars : code -> string array
+val varnames : 'i code -> string array
+val cellvars : 'i code -> string array
+val freevars : 'i code -> string array
 
 (** {2 Pretty-printing (dis-like; for humans and golden tests)} *)
 
 val pp_const : Format.formatter -> const -> unit
-val pp_code : Format.formatter -> code -> unit
+val pp_code : Format.formatter -> instr code -> unit
+
+val render_generic :
+  render_instr:('i code -> 'i -> string) ->
+  children:('i code -> 'i code list) ->
+  Buffer.t ->
+  'i code ->
+  unit
+(** Shared dis-like renderer used by both {!pp_code} and derived IRs.
+    [render_instr c ins] formats the instruction column (everything after the
+    line/index gutter; trailing spaces are trimmed); [children c] lists the
+    nested code objects to disassemble depth-first afterwards. *)

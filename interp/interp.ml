@@ -1941,7 +1941,7 @@ and bind_args st (fn : func) args kwargs : value Int_map.t r =
   let pname i = fst code.localsplus.(i) in
   let argc = code.argcount and kwonly = code.kwonlyargcount in
   let posonly = code.posonlyargcount in
-  let has_va = code.flags land 0x4 <> 0 and has_kw = code.flags land 0x8 <> 0 in
+  let has_va = Ast.has_varargs code and has_kw = Ast.has_varkw code in
   let va_slot = argc + kwonly in
   let kw_slot = va_slot + if has_va then 1 else 0 in
   let err msg = Printf.sprintf "%s() %s" code.name msg in
@@ -2299,8 +2299,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       Ok (Fin (Returned v), st)
   | Return_generator ->
       let kind =
-        if f.code.flags land 0x200 <> 0 then `Async_gen
-        else if f.code.flags land 0x80 <> 0 then `Coroutine
+        if Ast.is_async_generator f.code then `Async_gen
+        else if Ast.is_coroutine f.code then `Coroutine
         else `Gen
       in
       let g, st =

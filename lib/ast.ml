@@ -26,13 +26,17 @@ type const =
   | Bytes of string
   | Tuple of const array
   | Frozenset of const array
-  | Code of code
+  | Code of instr code
   | Ellipsis
 
-and code = {
+(* Parameterized over the instruction representation so derived IRs (e.g.
+   {!Phir}) can reuse the same frame, debug-info and exception-table shape and
+   the shared pretty-printer below. [Ast.code] is [instr code]. *)
+and 'i code = {
   filename : string;
   name : string;
   qualname : string;
+  docstring : string option;
   firstlineno : int;
   argcount : int;
   posonlyargcount : int;
@@ -43,7 +47,7 @@ and code = {
   consts : const array;
   names : string array;
   localsplus : (string * local_kind) array;
-  instrs : instr array;
+  instrs : 'i array;
   exn_table : exn_entry array;
   lines : int array;
   positions : positions array;
@@ -61,13 +65,13 @@ let co_coroutine = 0x80
 let co_iterable_coroutine = 0x100
 let co_async_generator = 0x200
 let test_flag bit c = c.flags land bit <> 0
-let is_optimized = test_flag co_optimized
-let is_generator = test_flag co_generator
-let is_coroutine = test_flag co_coroutine
-let is_async_generator = test_flag co_async_generator
-let has_varargs = test_flag co_varargs
-let has_varkw = test_flag co_varkeywords
-let is_nested = test_flag co_nested
+let is_optimized c = test_flag co_optimized c
+let is_generator c = test_flag co_generator c
+let is_coroutine c = test_flag co_coroutine c
+let is_async_generator c = test_flag co_async_generator c
+let has_varargs c = test_flag co_varargs c
+let has_varkw c = test_flag co_varkeywords c
+let is_nested c = test_flag co_nested c
 
 let filter_localsplus pred c =
   Array.of_list
@@ -75,13 +79,13 @@ let filter_localsplus pred c =
        (fun (name, kind) -> if pred kind then Some name else None)
        (Array.to_list c.localsplus))
 
-let varnames =
-  filter_localsplus (function Local | Local_and_cell -> true | _ -> false)
+let varnames c =
+  filter_localsplus (function Local | Local_and_cell -> true | _ -> false) c
 
-let cellvars =
-  filter_localsplus (function Cell | Local_and_cell -> true | _ -> false)
+let cellvars c =
+  filter_localsplus (function Cell | Local_and_cell -> true | _ -> false) c
 
-let freevars = filter_localsplus (function Free -> true | _ -> false)
+let freevars c = filter_localsplus (function Free -> true | _ -> false) c
 
 (* ------------------------------------------------------------------ *)
 (* Pretty-printing                                                     *)
@@ -209,7 +213,18 @@ let arg_hint c { op; arg } =
   | op when Opcode.has_local op || Opcode.has_free op -> Some (local arg)
   | _ -> None
 
-let rec render buf c =
+let rstrip s =
+  let len = ref (String.length s) in
+  while !len > 0 && s.[!len - 1] = ' ' do
+    decr len
+  done;
+  String.sub s 0 !len
+
+(* Shared dis-like renderer. The instruction column ([render_instr]) and the
+   nested code objects ([children]) are supplied by the caller, so derived IRs
+   reuse the frame header, localsplus/exception-table layout, line-label logic
+   and depth-first recursion. *)
+let rec render_generic ~render_instr ~children buf (c : 'i code) =
   let pr fmt = Printf.bprintf buf fmt in
   pr "%s (%s:%d)\n" c.qualname c.filename c.firstlineno;
   pr
@@ -228,29 +243,14 @@ let rec render buf c =
   Array.iteri
     (fun i ins ->
       let line = if i < Array.length c.lines then c.lines.(i) else -1 in
-      let line_label =
+      let label =
         if line <> !prev_line && line >= 0 then (
           prev_line := line;
           string_of_int line)
         else ""
       in
-      let arg_str =
-        if Opcode.has_arg ins.op then Printf.sprintf "%4d" ins.arg else "    "
-      in
-      let hint =
-        match arg_hint c ins with
-        | Some h -> Printf.sprintf "  (%s)" h
-        | None -> ""
-      in
-      let row =
-        Printf.sprintf "  %4s %4d  %-26s %s%s" line_label i
-          (Opcode.to_string ins.op) arg_str hint
-      in
-      let len = ref (String.length row) in
-      while !len > 0 && row.[!len - 1] = ' ' do
-        decr len
-      done;
-      pr "%s\n" (String.sub row 0 !len))
+      pr "%s\n"
+        (rstrip (Printf.sprintf "  %4s %4d  %s" label i (render_instr c ins))))
     c.instrs;
   if Array.length c.exn_table > 0 then begin
     pr "  exception table:\n";
@@ -262,17 +262,31 @@ let rec render buf c =
       c.exn_table
   end;
   (* Recurse into nested code objects, depth-first, like `dis`. *)
-  Array.iter
-    (function
-      | Code nested ->
-          pr "\nDisassembly of %s:\n" nested.qualname;
-          render buf nested
-      | _ -> ())
-    c.consts
+  List.iter
+    (fun nested ->
+      pr "\nDisassembly of %s:\n" nested.qualname;
+      render_generic ~render_instr ~children buf nested)
+    (children c)
+
+(* The instruction column for raw bytecode: opcode, decimal arg, dis-like
+   hint. *)
+let render_instr c ins =
+  let arg_str =
+    if Opcode.has_arg ins.op then Printf.sprintf "%4d" ins.arg else "    "
+  in
+  let hint =
+    match arg_hint c ins with Some h -> Printf.sprintf "  (%s)" h | None -> ""
+  in
+  Printf.sprintf "%-26s %s%s" (Opcode.to_string ins.op) arg_str hint
+
+let children c =
+  List.filter_map
+    (function Code nested -> Some nested | _ -> None)
+    (Array.to_list c.consts)
 
 let pp_const fmt c = Format.pp_print_string fmt (const_repr c)
 
 let pp_code fmt c =
   let buf = Buffer.create 4096 in
-  render buf c;
+  render_generic ~render_instr ~children buf c;
   Format.pp_print_string fmt (Buffer.contents buf)

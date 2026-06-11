@@ -131,7 +131,7 @@ and localsplus_row ctx : json -> string * Ast.local_kind = function
   | `List [ name; kind ] -> (pystr ctx name, local_kind ctx kind)
   | j -> fail ctx ("invalid localsplus row: " ^ Yojson.Safe.to_string j)
 
-and code ctx : json -> Ast.code = function
+and code ctx : json -> Ast.instr Ast.code = function
   | `Assoc fields ->
       let ctx =
         match List.assoc_opt "qualname" fields with
@@ -154,10 +154,17 @@ and code ctx : json -> Ast.code = function
           Array.of_list (List.map (fun (_, _, p) -> Option.get p) rows)
         else [||]
       in
+      let consts =
+        Array.of_list (List.map (const (ctx ^ ".consts")) (list "consts"))
+      in
       {
         Ast.filename = str "filename";
         name = str "name";
         qualname = str "qualname";
+        docstring =
+          (if Array.length consts > 0 then
+             match consts.(0) with Ast.Str s -> Some s | _ -> None
+           else None);
         firstlineno = int "firstlineno";
         argcount = int "argcount";
         posonlyargcount = int "posonlyargcount";
@@ -165,8 +172,7 @@ and code ctx : json -> Ast.code = function
         nlocals = int "nlocals";
         stacksize = int "stacksize";
         flags = int "flags";
-        consts =
-          Array.of_list (List.map (const (ctx ^ ".consts")) (list "consts"));
+        consts;
         names = Array.of_list (List.map (pystr (ctx ^ ".names")) (list "names"));
         localsplus =
           Array.of_list
@@ -208,7 +214,7 @@ let error_of_doc ctx ~python fields =
           msg = "unknown error kind " ^ Printf.sprintf "%S" kind;
         }
 
-let code_of_envelope (j : json) : (Ast.code, Error.t) result =
+let code_of_envelope (j : json) : (Ast.instr Ast.code, Error.t) result =
   match j with
   | `Assoc fields -> (
       match List.assoc_opt "format" fields with
