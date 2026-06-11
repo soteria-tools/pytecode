@@ -3,22 +3,22 @@
 
 (** CPython opcodes, as a pure OCaml variant.
 
-    Union of all real opcodes (numeric value < 256) of the supported
-    CPython versions (currently: 3.13.5). Pseudo-opcodes never survive
-    assembly and are excluded; specialized (adaptive) opcodes never
-    appear in freshly compiled code.
+    Union of all real opcodes (numeric value < 256) of the supported CPython
+    versions (currently: 3.13.5). Pseudo-opcodes never survive assembly and are
+    excluded; specialized (adaptive) opcodes never appear in freshly compiled
+    code.
 
-    [@@deriving opcode] declares [to_string], [of_string], [all]
-    (declaration order, i.e. alphabetical), and one predicate per
-    flag attribute:
+    [@@deriving opcode] declares [to_string], [of_string], [all] (declaration
+    order, i.e. alphabetical), and one predicate per flag attribute:
     - [has_arg]: [i.arg] is meaningful (HAVE_ARGUMENT).
-    - [is_jump]: the arg is a jump target (in pytecode: an absolute instruction index).
+    - [is_jump]: the arg is a jump target (in pytecode: an absolute instruction
+      index).
     - [has_const]: the arg indexes [code.consts].
-    - [has_name]: the arg indexes [code.names] (possibly with low flag bits, e.g. LOAD_GLOBAL/LOAD_ATTR).
+    - [has_name]: the arg indexes [code.names] (possibly with low flag bits,
+      e.g. LOAD_GLOBAL/LOAD_ATTR).
     - [has_local]: the arg indexes [code.localsplus].
     - [has_free]: the arg indexes [code.localsplus] (cell/free slot).
-    - [has_exc]: intrinsic exception-related opcode (dis.hasexc).
-*)
+    - [has_exc]: intrinsic exception-related opcode (dis.hasexc). *)
 
 type t =
   | BEFORE_ASYNC_WITH

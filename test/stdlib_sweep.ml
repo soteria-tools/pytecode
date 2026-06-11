@@ -57,7 +57,7 @@ let () =
   let dt = Unix.gettimeofday () -. t0 in
   let opcount = Hashtbl.create 256 in
   let codes = ref 0 and instrs = ref 0 and failures = ref 0 in
-  let rec count (c : Ast.code) =
+  let rec count (c : Ast.instr Ast.code) =
     incr codes;
     Array.iter
       (fun { Ast.op; _ } ->

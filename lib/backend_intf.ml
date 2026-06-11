@@ -14,12 +14,14 @@ module type S = sig
       Python version, wire-format version. Cache layers key on
       [(identity, path, source)]. *)
 
-  val compile_file : string -> (Ast.code, Error.t) result
+  val compile_file : string -> (Ast.instr Ast.code, Error.t) result
 
-  val compile_string : ?filename:string -> string -> (Ast.code, Error.t) result
+  val compile_string :
+    ?filename:string -> string -> (Ast.instr Ast.code, Error.t) result
   (** [filename] defaults to ["<string>"]. *)
 
-  val compile_batch : string list -> (string * (Ast.code, Error.t) result) list
+  val compile_batch :
+    string list -> (string * (Ast.instr Ast.code, Error.t) result) list
   (** Compile many files with a single Python process (NDJSON streaming). Order
       is preserved; per-file failures don't abort the batch. *)
 end

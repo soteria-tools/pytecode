@@ -144,9 +144,37 @@ type t =
 
 let hash (x : t) = Hashtbl.hash x
 let pp fmt x = Format.pp_print_string fmt (to_string x)
-
 let python_version = "3.13.5"
 
 (* Display tables for the pretty-printer (BINARY_OP / COMPARE_OP args). *)
-let binary_op_repr = [| "+"; "&"; "//"; "<<"; "@"; "*"; "%"; "|"; "**"; ">>"; "-"; "/"; "^"; "+="; "&="; "//="; "<<="; "@="; "*="; "%="; "|="; "**="; ">>="; "-="; "/="; "^=" |]
+let binary_op_repr =
+  [|
+    "+";
+    "&";
+    "//";
+    "<<";
+    "@";
+    "*";
+    "%";
+    "|";
+    "**";
+    ">>";
+    "-";
+    "/";
+    "^";
+    "+=";
+    "&=";
+    "//=";
+    "<<=";
+    "@=";
+    "*=";
+    "%=";
+    "|=";
+    "**=";
+    ">>=";
+    "-=";
+    "/=";
+    "^=";
+  |]
+
 let cmp_op_repr = [| "<"; "<="; "=="; "!="; ">"; ">=" |]
