@@ -134,26 +134,28 @@ let bytes_repr s =
   Buffer.add_char buf '\'';
   Buffer.contents buf
 
-let rec const_repr = function
-  | None_ -> "None"
-  | Bool true -> "True"
-  | Bool false -> "False"
-  | Int z -> Z.to_string z
-  | Float f -> float_repr f
+let rec pp_const ppf : const -> unit = function
+  | None_ -> Fmt.string ppf "None"
+  | Bool true -> Fmt.string ppf "True"
+  | Bool false -> Fmt.string ppf "False"
+  | Int z -> Fmt.string ppf (Z.to_string z)
+  | Float f -> Fmt.string ppf (float_repr f)
   | Complex { re; im } ->
-      Printf.sprintf "complex(%s, %s)" (float_repr re) (float_repr im)
-  | Str s -> str_repr s
-  | Bytes s -> bytes_repr s
-  | Tuple [| x |] -> Printf.sprintf "(%s,)" (const_repr x)
-  | Tuple xs ->
-      Printf.sprintf "(%s)"
-        (String.concat ", " (Array.to_list (Array.map const_repr xs)))
-  | Frozenset [||] -> "frozenset()"
-  | Frozenset xs ->
-      Printf.sprintf "frozenset({%s})"
-        (String.concat ", " (Array.to_list (Array.map const_repr xs)))
-  | Code c -> Printf.sprintf "<code %s>" c.qualname
-  | Ellipsis -> "Ellipsis"
+      Fmt.pf ppf "complex(%s, %s)" (float_repr re) (float_repr im)
+  | Str s -> Fmt.string ppf (str_repr s)
+  | Bytes s -> Fmt.string ppf (bytes_repr s)
+  | Tuple [| x |] -> Fmt.pf ppf "(%a,)" pp_const x
+  | Tuple xs -> Fmt.pf ppf "(%a)" pp_consts xs
+  | Frozenset [||] -> Fmt.string ppf "frozenset()"
+  | Frozenset xs -> Fmt.pf ppf "frozenset({%a})" pp_consts xs
+  | Code c -> Fmt.pf ppf "<code %s>" c.qualname
+  | Ellipsis -> Fmt.string ppf "Ellipsis"
+
+(* A comma-separated run of constants, with literal ", " (never a Format break,
+   so reprs stay on one line). *)
+and pp_consts ppf xs = Fmt.(array ~sep:(any ", ") pp_const) ppf xs
+
+let const_repr = Fmt.to_to_string pp_const
 
 let local_kind_repr = function
   | Local -> "local"
@@ -213,80 +215,76 @@ let arg_hint c { op; arg } =
   | op when Opcode.has_local op || Opcode.has_free op -> Some (local arg)
   | _ -> None
 
-let rstrip s =
-  let len = ref (String.length s) in
-  while !len > 0 && s.[!len - 1] = ' ' do
-    decr len
-  done;
-  String.sub s 0 !len
+let pp_localsplus_entry ppf (n, k) = Fmt.pf ppf "%s:%s" n (local_kind_repr k)
 
-(* Shared dis-like renderer. The instruction column ([render_instr]) and the
-   nested code objects ([children]) are supplied by the caller, so derived IRs
-   reuse the frame header, localsplus/exception-table layout, line-label logic
-   and depth-first recursion. *)
-let rec render_generic ~render_instr ~children buf (c : 'i code) =
-  let pr fmt = Printf.bprintf buf fmt in
-  pr "%s (%s:%d)\n" c.qualname c.filename c.firstlineno;
-  pr
+let pp_exn_entry ppf e =
+  Fmt.pf ppf "    [%d, %d) -> %d depth=%d%s@\n" e.start_idx e.end_idx
+    e.target_idx e.depth
+    (if e.push_lasti then " lasti" else "")
+
+(* Pair each instruction with its index and a line-number label (shown only when
+   the line changes), matching `dis`'s gutter. *)
+let instr_rows (c : 'i code) =
+  let _, _, rev =
+    Array.fold_left
+      (fun (i, prev, acc) ins ->
+        let line = if i < Array.length c.lines then c.lines.(i) else -1 in
+        let label, prev =
+          if line <> prev && line >= 0 then (string_of_int line, line)
+          else ("", prev)
+        in
+        (i + 1, prev, (label, i, ins) :: acc))
+      (0, min_int, []) c.instrs
+  in
+  List.rev rev
+
+(* Shared dis-like renderer. The instruction column ([pp_instr]) and the nested
+   code objects ([children]) are supplied by the caller, so derived IRs reuse
+   the frame header, localsplus/exception-table layout, line-label gutter and
+   depth-first recursion. [pp_instr] must not emit trailing whitespace. *)
+let rec pp_code_generic ~pp_instr ~children ppf (c : 'i code) =
+  let pp_row ppf (label, i, ins) =
+    Fmt.pf ppf "  %4s %4d  %a@\n" label i (pp_instr c) ins
+  in
+  Fmt.pf ppf "%s (%s:%d)@\n" c.qualname c.filename c.firstlineno;
+  Fmt.pf ppf
     "  argcount %d (posonly %d, kwonly %d), nlocals %d, stacksize %d, flags \
-     0x%x%s\n"
+     0x%x%s@\n"
     c.argcount c.posonlyargcount c.kwonlyargcount c.nlocals c.stacksize c.flags
     (flags_repr c.flags);
   if Array.length c.names > 0 then
-    pr "  names: %s\n" (String.concat ", " (Array.to_list c.names));
+    Fmt.pf ppf "  names: %a@\n" Fmt.(array ~sep:(any ", ") string) c.names;
   if Array.length c.localsplus > 0 then
-    pr "  localsplus: %s\n"
-      (String.concat ", "
-         (Array.to_list
-            (Array.map (fun (n, k) -> n ^ ":" ^ local_kind_repr k) c.localsplus)));
-  let prev_line = ref min_int in
-  Array.iteri
-    (fun i ins ->
-      let line = if i < Array.length c.lines then c.lines.(i) else -1 in
-      let label =
-        if line <> !prev_line && line >= 0 then (
-          prev_line := line;
-          string_of_int line)
-        else ""
-      in
-      pr "%s\n"
-        (rstrip (Printf.sprintf "  %4s %4d  %s" label i (render_instr c ins))))
-    c.instrs;
+    Fmt.pf ppf "  localsplus: %a@\n"
+      Fmt.(array ~sep:(any ", ") pp_localsplus_entry)
+      c.localsplus;
+  Fmt.(list ~sep:nop pp_row) ppf (instr_rows c);
   if Array.length c.exn_table > 0 then begin
-    pr "  exception table:\n";
-    Array.iter
-      (fun e ->
-        pr "    [%d, %d) -> %d depth=%d%s\n" e.start_idx e.end_idx e.target_idx
-          e.depth
-          (if e.push_lasti then " lasti" else ""))
-      c.exn_table
+    Fmt.pf ppf "  exception table:@\n";
+    Fmt.(array ~sep:nop pp_exn_entry) ppf c.exn_table
   end;
   (* Recurse into nested code objects, depth-first, like `dis`. *)
   List.iter
     (fun nested ->
-      pr "\nDisassembly of %s:\n" nested.qualname;
-      render_generic ~render_instr ~children buf nested)
+      Fmt.pf ppf "@\nDisassembly of %s:@\n" nested.qualname;
+      pp_code_generic ~pp_instr ~children ppf nested)
     (children c)
 
-(* The instruction column for raw bytecode: opcode, decimal arg, dis-like
-   hint. *)
-let render_instr c ins =
-  let arg_str =
-    if Opcode.has_arg ins.op then Printf.sprintf "%4d" ins.arg else "    "
-  in
-  let hint =
-    match arg_hint c ins with Some h -> Printf.sprintf "  (%s)" h | None -> ""
-  in
-  Printf.sprintf "%-26s %s%s" (Opcode.to_string ins.op) arg_str hint
+(* The instruction column for raw bytecode: opcode, decimal arg, dis-like hint.
+   No padding when there is nothing after the opcode, so no trailing space. *)
+let pp_instr c ppf ins =
+  match
+    (Opcode.has_arg ins.op, Option.map (Fmt.str "  (%s)") (arg_hint c ins))
+  with
+  | false, None -> Fmt.string ppf (Opcode.to_string ins.op)
+  | has_arg, hint ->
+      let arg_str = if has_arg then Fmt.str "%4d" ins.arg else "    " in
+      Fmt.pf ppf "%-26s %s%s" (Opcode.to_string ins.op) arg_str
+        (Option.value ~default:"" hint)
 
 let children c =
   List.filter_map
     (function Code nested -> Some nested | _ -> None)
     (Array.to_list c.consts)
 
-let pp_const fmt c = Format.pp_print_string fmt (const_repr c)
-
-let pp_code fmt c =
-  let buf = Buffer.create 4096 in
-  render_generic ~render_instr ~children buf c;
-  Format.pp_print_string fmt (Buffer.contents buf)
+let pp_code ppf c = pp_code_generic ~pp_instr ~children ppf c

@@ -22,6 +22,8 @@
    (>= 2.0))
   (zarith
    (>= 1.12))
+  (fmt
+   (>= 0.9))
   (ppxlib
    (>= 0.32))
   ppx_deriving

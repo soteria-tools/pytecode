@@ -1,7 +1,7 @@
 (library
  (name pytecode)
  (public_name pytecode)
- (libraries unix yojson zarith)
+ (libraries unix yojson zarith fmt)
  (preprocess
   (pps ppx_opcode ppx_deriving.std)))
 

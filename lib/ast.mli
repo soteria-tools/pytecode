@@ -124,13 +124,13 @@ val freevars : 'i code -> string array
 val pp_const : Format.formatter -> const -> unit
 val pp_code : Format.formatter -> instr code -> unit
 
-val render_generic :
-  render_instr:('i code -> 'i -> string) ->
+val pp_code_generic :
+  pp_instr:('i code -> Format.formatter -> 'i -> unit) ->
   children:('i code -> 'i code list) ->
-  Buffer.t ->
+  Format.formatter ->
   'i code ->
   unit
-(** Shared dis-like renderer used by both {!pp_code} and derived IRs.
-    [render_instr c ins] formats the instruction column (everything after the
-    line/index gutter; trailing spaces are trimmed); [children c] lists the
-    nested code objects to disassemble depth-first afterwards. *)
+(** Shared dis-like pretty-printer used by both {!pp_code} and derived IRs.
+    [pp_instr c] formats the instruction column (everything after the line/index
+    gutter) and must not emit trailing whitespace; [children c] lists the nested
+    code objects to disassemble depth-first afterwards. *)

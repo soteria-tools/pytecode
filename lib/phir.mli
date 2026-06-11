@@ -244,6 +244,10 @@ val values : instr -> value list
 
 val pp_code : Format.formatter -> code -> unit
 
-val instr_to_string : (string * Ast.local_kind) array -> instr -> string
+val pp_instr :
+  (string * Ast.local_kind) array -> Format.formatter -> instr -> unit
 (** One instruction, rendered with the given localsplus for slot names — for
     error messages and debugging. *)
+
+val instr_to_string : (string * Ast.local_kind) array -> instr -> string
+(** [Fmt.to_to_string]-style wrapper around {!pp_instr}. *)

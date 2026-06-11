@@ -803,160 +803,173 @@ let intrinsic_2_str = function
   | Set_function_type_params -> "set_function_type_params"
   | Set_typeparam_default -> "set_typeparam_default"
 
-let var_str lp = function
+let pp_var lp ppf = function
   | Fast i ->
-      if i >= 0 && i < Array.length lp then fst lp.(i)
-      else "fast#" ^ string_of_int i
+      Fmt.string ppf
+        (if i >= 0 && i < Array.length lp then fst lp.(i)
+         else "fast#" ^ string_of_int i)
   | Deref i ->
-      "deref:"
-      ^
-      if i >= 0 && i < Array.length lp then fst lp.(i)
-      else "#" ^ string_of_int i
-  | Name s -> "name:" ^ s
-  | Global s -> "global:" ^ s
+      Fmt.pf ppf "deref:%s"
+        (if i >= 0 && i < Array.length lp then fst lp.(i)
+         else "#" ^ string_of_int i)
+  | Name s -> Fmt.pf ppf "name:%s" s
+  | Global s -> Fmt.pf ppf "global:%s" s
 
-let value_str lp = function
-  | Stack -> "stack"
-  | Null -> "null"
-  | Const c -> Format.asprintf "%a" Ast.pp_const c
-  | Code c -> "<code " ^ c.qualname ^ ">"
-  | Var v -> var_str lp v
+let pp_value lp ppf = function
+  | Stack -> Fmt.string ppf "stack"
+  | Null -> Fmt.string ppf "null"
+  | Const c -> Ast.pp_const ppf c
+  | Code c -> Fmt.pf ppf "<code %s>" c.qualname
+  | Var v -> pp_var lp ppf v
 
-let instr_str lp ins =
-  let v = value_str lp in
-  let vs values = String.concat ", " (List.map v (Array.to_list values)) in
-  let app name args = name ^ "(" ^ String.concat ", " args ^ ")" in
-  let int = string_of_int in
+(* A bracketed, comma-separated run of values: [v1, v2, ...]. *)
+let pp_vlist lp ppf vs =
+  Fmt.pf ppf "[%a]" Fmt.(array ~sep:(any ", ") (pp_value lp)) vs
+
+let pp_instr lp ppf ins =
+  let v = pp_value lp and var = pp_var lp in
+  let vlist = pp_vlist lp in
   match ins with
-  | Assign (x, value) -> app "Assign" [ var_str lp x; v value ]
-  | Delete x -> app "Delete" [ var_str lp x ]
-  | Push value -> app "Push" [ v value ]
-  | Pop_top value -> app "Pop_top" [ v value ]
-  | Copy n -> app "Copy" [ int n ]
-  | Swap n -> app "Swap" [ int n ]
-  | Unary (op, value) -> app "Unary" [ unop_str op; v value ]
+  | Assign (x, value) -> Fmt.pf ppf "Assign(%a, %a)" var x v value
+  | Delete x -> Fmt.pf ppf "Delete(%a)" var x
+  | Push value -> Fmt.pf ppf "Push(%a)" v value
+  | Pop_top value -> Fmt.pf ppf "Pop_top(%a)" v value
+  | Copy n -> Fmt.pf ppf "Copy(%d)" n
+  | Swap n -> Fmt.pf ppf "Swap(%d)" n
+  | Unary (op, value) -> Fmt.pf ppf "Unary(%s, %a)" (unop_str op) v value
   | Binary_op { op; inplace; l; r } ->
-      app "Binary_op" [ binop_str op inplace; v l; v r ]
+      Fmt.pf ppf "Binary_op(%s, %a, %a)" (binop_str op inplace) v l v r
   | Compare { op; coerce_bool; l; r } ->
-      app "Compare"
-        [ (cmpop_str op ^ if coerce_bool then " as bool" else ""); v l; v r ]
+      Fmt.pf ppf "Compare(%s, %a, %a)"
+        (cmpop_str op ^ if coerce_bool then " as bool" else "")
+        v l v r
   | Is_op { invert; l; r } ->
-      app (if invert then "Is_not" else "Is") [ v l; v r ]
+      Fmt.pf ppf "%s(%a, %a)" (if invert then "Is_not" else "Is") v l v r
   | Contains_op { invert; item; seq } ->
-      app (if invert then "Not_in" else "In") [ v item; v seq ]
-  | Subscript (obj, index) -> app "Subscript" [ v obj; v index ]
+      Fmt.pf ppf "%s(%a, %a)" (if invert then "Not_in" else "In") v item v seq
+  | Subscript (obj, index) -> Fmt.pf ppf "Subscript(%a, %a)" v obj v index
   | Store_subscr { value; obj; index } ->
-      app "Store_subscr" [ v value; v obj; v index ]
-  | Delete_subscr { obj; index } -> app "Delete_subscr" [ v obj; v index ]
+      Fmt.pf ppf "Store_subscr(%a, %a, %a)" v value v obj v index
+  | Delete_subscr { obj; index } ->
+      Fmt.pf ppf "Delete_subscr(%a, %a)" v obj v index
   | Binary_slice { obj; start; stop } ->
-      app "Binary_slice" [ v obj; v start; v stop ]
+      Fmt.pf ppf "Binary_slice(%a, %a, %a)" v obj v start v stop
   | Store_slice { value; obj; start; stop } ->
-      app "Store_slice" [ v value; v obj; v start; v stop ]
+      Fmt.pf ppf "Store_slice(%a, %a, %a, %a)" v value v obj v start v stop
   | Load_attr { obj; name; meth } ->
-      app (if meth then "Load_method" else "Load_attr") [ v obj; name ]
+      Fmt.pf ppf "%s(%a, %s)"
+        (if meth then "Load_method" else "Load_attr")
+        v obj name
   | Load_super_attr { super; cls; self; name; _ } ->
-      app "Load_super_attr" [ v super; v cls; v self; name ]
-  | Store_attr { value; obj; name } -> app "Store_attr" [ v value; v obj; name ]
-  | Delete_attr { obj; name } -> app "Delete_attr" [ v obj; name ]
-  | Call { f; self; args } -> app "Call" [ v f; v self; "[" ^ vs args ^ "]" ]
+      Fmt.pf ppf "Load_super_attr(%a, %a, %a, %s)" v super v cls v self name
+  | Store_attr { value; obj; name } ->
+      Fmt.pf ppf "Store_attr(%a, %a, %s)" v value v obj name
+  | Delete_attr { obj; name } -> Fmt.pf ppf "Delete_attr(%a, %s)" v obj name
+  | Call { f; self; args } ->
+      Fmt.pf ppf "Call(%a, %a, %a)" v f v self vlist args
   | Call_kw { f; self; args; kw_names } ->
-      app "Call_kw" [ v f; v self; "[" ^ vs args ^ "]"; v kw_names ]
-  | Call_ex { f; null; args; kwargs } ->
-      app "Call_ex"
-        ([ v f; v null; v args ]
-        @ match kwargs with Some k -> [ v k ] | None -> [])
-  | Intrinsic_1 (id, value) -> app "Intrinsic_1" [ intrinsic_1_str id; v value ]
-  | Intrinsic_2 (id, a, b) -> app "Intrinsic_2" [ intrinsic_2_str id; v a; v b ]
-  | Jump t -> app "Jump" [ int t ]
+      Fmt.pf ppf "Call_kw(%a, %a, %a, %a)" v f v self vlist args v kw_names
+  | Call_ex { f; null; args; kwargs = Some k } ->
+      Fmt.pf ppf "Call_ex(%a, %a, %a, %a)" v f v null v args v k
+  | Call_ex { f; null; args; kwargs = None } ->
+      Fmt.pf ppf "Call_ex(%a, %a, %a)" v f v null v args
+  | Intrinsic_1 (id, value) ->
+      Fmt.pf ppf "Intrinsic_1(%s, %a)" (intrinsic_1_str id) v value
+  | Intrinsic_2 (id, a, b) ->
+      Fmt.pf ppf "Intrinsic_2(%s, %a, %a)" (intrinsic_2_str id) v a v b
+  | Jump t -> Fmt.pf ppf "Jump(%d)" t
   | Cond_jump { cond; v = value; target } ->
-      app "Cond_jump" [ cond_str cond; v value; int target ]
-  | Get_iter value -> app "Get_iter" [ v value ]
-  | For_iter t -> app "For_iter" [ int t ]
-  | End_for -> "End_for"
-  | Get_yield_from_iter value -> app "Get_yield_from_iter" [ v value ]
-  | Return value -> app "Return" [ v value ]
-  | Return_generator -> "Return_generator"
-  | Yield { v = value; _ } -> app "Yield" [ v value ]
-  | Send { v = value; on_stop } -> app "Send" [ v value; int on_stop ]
-  | End_send -> "End_send"
-  | Cleanup_throw -> "Cleanup_throw"
+      Fmt.pf ppf "Cond_jump(%s, %a, %d)" (cond_str cond) v value target
+  | Get_iter value -> Fmt.pf ppf "Get_iter(%a)" v value
+  | For_iter t -> Fmt.pf ppf "For_iter(%d)" t
+  | End_for -> Fmt.string ppf "End_for"
+  | Get_yield_from_iter value -> Fmt.pf ppf "Get_yield_from_iter(%a)" v value
+  | Return value -> Fmt.pf ppf "Return(%a)" v value
+  | Return_generator -> Fmt.string ppf "Return_generator"
+  | Yield { v = value; _ } -> Fmt.pf ppf "Yield(%a)" v value
+  | Send { v = value; on_stop } -> Fmt.pf ppf "Send(%a, %d)" v value on_stop
+  | End_send -> Fmt.string ppf "End_send"
+  | Cleanup_throw -> Fmt.string ppf "Cleanup_throw"
   | Raise { exc; cause } ->
-      app "Raise" (List.filter_map (Option.map v) [ exc; cause ])
-  | Reraise n -> app "Reraise" [ int n ]
-  | Push_exc_info -> "Push_exc_info"
-  | Pop_except -> "Pop_except"
-  | Check_exc_match value -> app "Check_exc_match" [ v value ]
-  | Check_eg_match { exc; pattern } -> app "Check_eg_match" [ v exc; v pattern ]
-  | With_except_start -> "With_except_start"
-  | Build_tuple values -> app "Build_tuple" [ "[" ^ vs values ^ "]" ]
-  | Build_list values -> app "Build_list" [ "[" ^ vs values ^ "]" ]
-  | Build_set values -> app "Build_set" [ "[" ^ vs values ^ "]" ]
+      Fmt.pf ppf "Raise(%a)"
+        Fmt.(list ~sep:(any ", ") v)
+        (List.filter_map Fun.id [ exc; cause ])
+  | Reraise n -> Fmt.pf ppf "Reraise(%d)" n
+  | Push_exc_info -> Fmt.string ppf "Push_exc_info"
+  | Pop_except -> Fmt.string ppf "Pop_except"
+  | Check_exc_match value -> Fmt.pf ppf "Check_exc_match(%a)" v value
+  | Check_eg_match { exc; pattern } ->
+      Fmt.pf ppf "Check_eg_match(%a, %a)" v exc v pattern
+  | With_except_start -> Fmt.string ppf "With_except_start"
+  | Build_tuple values -> Fmt.pf ppf "Build_tuple(%a)" vlist values
+  | Build_list values -> Fmt.pf ppf "Build_list(%a)" vlist values
+  | Build_set values -> Fmt.pf ppf "Build_set(%a)" vlist values
   | Build_map pairs ->
-      app "Build_map"
-        (List.map
-           (fun (k, value) -> v k ^ ": " ^ v value)
-           (Array.to_list pairs))
-  | Build_string values -> app "Build_string" [ "[" ^ vs values ^ "]" ]
-  | Build_slice values -> app "Build_slice" [ "[" ^ vs values ^ "]" ]
+      let pp_pair ppf (k, value) = Fmt.pf ppf "%a: %a" v k v value in
+      Fmt.pf ppf "Build_map(%a)" Fmt.(array ~sep:(any ", ") pp_pair) pairs
+  | Build_string values -> Fmt.pf ppf "Build_string(%a)" vlist values
+  | Build_slice values -> Fmt.pf ppf "Build_slice(%a)" vlist values
   | Build_const_key_map { keys; values } ->
-      app "Build_const_key_map" [ v keys; "[" ^ vs values ^ "]" ]
-  | List_append (d, value) -> app "List_append" [ int d; v value ]
-  | Set_add (d, value) -> app "Set_add" [ int d; v value ]
-  | Map_add (d, k, value) -> app "Map_add" [ int d; v k; v value ]
-  | List_extend (d, value) -> app "List_extend" [ int d; v value ]
-  | Set_update (d, value) -> app "Set_update" [ int d; v value ]
-  | Dict_update (d, value) -> app "Dict_update" [ int d; v value ]
-  | Dict_merge (d, value) -> app "Dict_merge" [ int d; v value ]
+      Fmt.pf ppf "Build_const_key_map(%a, %a)" v keys vlist values
+  | List_append (d, value) -> Fmt.pf ppf "List_append(%d, %a)" d v value
+  | Set_add (d, value) -> Fmt.pf ppf "Set_add(%d, %a)" d v value
+  | Map_add (d, k, value) -> Fmt.pf ppf "Map_add(%d, %a, %a)" d v k v value
+  | List_extend (d, value) -> Fmt.pf ppf "List_extend(%d, %a)" d v value
+  | Set_update (d, value) -> Fmt.pf ppf "Set_update(%d, %a)" d v value
+  | Dict_update (d, value) -> Fmt.pf ppf "Dict_update(%d, %a)" d v value
+  | Dict_merge (d, value) -> Fmt.pf ppf "Dict_merge(%d, %a)" d v value
   | Unpack_sequence (count, value) ->
-      app "Unpack_sequence" [ int count; v value ]
+      Fmt.pf ppf "Unpack_sequence(%d, %a)" count v value
   | Unpack_ex { before; after; v = value } ->
-      app "Unpack_ex" [ int before; int after; v value ]
-  | Format_simple value -> app "Format_simple" [ v value ]
-  | Format_with_spec (value, spec) -> app "Format_with_spec" [ v value; v spec ]
-  | Convert_value (c, value) -> app "Convert_value" [ conv_str c; v value ]
-  | Make_function value -> app "Make_function" [ v value ]
+      Fmt.pf ppf "Unpack_ex(%d, %d, %a)" before after v value
+  | Format_simple value -> Fmt.pf ppf "Format_simple(%a)" v value
+  | Format_with_spec (value, spec) ->
+      Fmt.pf ppf "Format_with_spec(%a, %a)" v value v spec
+  | Convert_value (c, value) ->
+      Fmt.pf ppf "Convert_value(%s, %a)" (conv_str c) v value
+  | Make_function value -> Fmt.pf ppf "Make_function(%a)" v value
   | Set_function_attribute { attr; v = value; f } ->
-      app "Set_function_attribute" [ func_attr_str attr; v value; v f ]
-  | Make_cell slot -> app "Make_cell" [ var_str lp (Fast slot) ]
-  | Copy_free_vars n -> app "Copy_free_vars" [ int n ]
-  | Load_build_class -> "Load_build_class"
-  | Load_assertion_error -> "Load_assertion_error"
-  | Setup_annotations -> "Setup_annotations"
-  | Load_locals -> "Load_locals"
+      Fmt.pf ppf "Set_function_attribute(%s, %a, %a)" (func_attr_str attr) v
+        value v f
+  | Make_cell slot -> Fmt.pf ppf "Make_cell(%a)" var (Fast slot)
+  | Copy_free_vars n -> Fmt.pf ppf "Copy_free_vars(%d)" n
+  | Load_build_class -> Fmt.string ppf "Load_build_class"
+  | Load_assertion_error -> Fmt.string ppf "Load_assertion_error"
+  | Setup_annotations -> Fmt.string ppf "Setup_annotations"
+  | Load_locals -> Fmt.string ppf "Load_locals"
   | Load_from_dict_or_globals (value, name) ->
-      app "Load_from_dict_or_globals" [ v value; name ]
+      Fmt.pf ppf "Load_from_dict_or_globals(%a, %s)" v value name
   | Load_from_dict_or_deref (value, slot) ->
-      app "Load_from_dict_or_deref" [ v value; var_str lp (Deref slot) ]
+      Fmt.pf ppf "Load_from_dict_or_deref(%a, %a)" v value var (Deref slot)
   | Load_fast_and_clear slot ->
-      app "Load_fast_and_clear" [ var_str lp (Fast slot) ]
+      Fmt.pf ppf "Load_fast_and_clear(%a)" var (Fast slot)
   | Import_name { name; level; from_list } ->
-      app "Import_name" [ name; v level; v from_list ]
-  | Import_from name -> app "Import_from" [ name ]
-  | Get_awaitable (where, value) -> app "Get_awaitable" [ int where; v value ]
-  | Get_aiter value -> app "Get_aiter" [ v value ]
-  | Get_anext -> "Get_anext"
-  | End_async_for -> "End_async_for"
-  | Before_with value -> app "Before_with" [ v value ]
-  | Before_async_with value -> app "Before_async_with" [ v value ]
+      Fmt.pf ppf "Import_name(%s, %a, %a)" name v level v from_list
+  | Import_from name -> Fmt.pf ppf "Import_from(%s)" name
+  | Get_awaitable (where, value) ->
+      Fmt.pf ppf "Get_awaitable(%d, %a)" where v value
+  | Get_aiter value -> Fmt.pf ppf "Get_aiter(%a)" v value
+  | Get_anext -> Fmt.string ppf "Get_anext"
+  | End_async_for -> Fmt.string ppf "End_async_for"
+  | Before_with value -> Fmt.pf ppf "Before_with(%a)" v value
+  | Before_async_with value -> Fmt.pf ppf "Before_async_with(%a)" v value
   | Match_class { count; subject; cls; names } ->
-      app "Match_class" [ int count; v subject; v cls; v names ]
-  | Match_mapping -> "Match_mapping"
-  | Match_sequence -> "Match_sequence"
-  | Match_keys -> "Match_keys"
-  | Get_len -> "Get_len"
+      Fmt.pf ppf "Match_class(%d, %a, %a, %a)" count v subject v cls v names
+  | Match_mapping -> Fmt.string ppf "Match_mapping"
+  | Match_sequence -> Fmt.string ppf "Match_sequence"
+  | Match_keys -> Fmt.string ppf "Match_keys"
+  | Get_len -> Fmt.string ppf "Get_len"
 
 (* Reuse the shared bytecode renderer: Phir only supplies its instruction column
    and how to find nested code objects (which live inside instruction operands
    now that constants are folded, not in a [consts] table). *)
-let pp_code fmt c =
-  let render_instr (c : code) ins = instr_str c.localsplus ins in
+let pp_code ppf c =
+  let pp_instr (c : code) = pp_instr c.localsplus in
   let children (c : code) =
     Array.to_list c.instrs
     |> List.concat_map (fun ins ->
         List.filter_map (function Code n -> Some n | _ -> None) (values ins))
   in
-  let buf = Buffer.create 4096 in
-  Ast.render_generic ~render_instr ~children buf c;
-  Format.pp_print_string fmt (Buffer.contents buf)
+  Ast.pp_code_generic ~pp_instr ~children ppf c
 
-let instr_to_string = instr_str
+let instr_to_string lp = Fmt.to_to_string (pp_instr lp)
