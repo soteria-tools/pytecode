@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pytecode is pinned to CPython 3.13; goldens and the stdlib sweep depend
+      # on it. Match the exact patch used to generate the goldens.
+      - name: Set up Python 3.13
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Configure Python for pytecode
+        run: |
+          echo "PYTECODE_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+          # The @gen rule invokes `python3.13` by name, so it must be on PATH.
+          python3.13 --version
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+
+      - name: Install dependencies
+        run: |
+          opam install . --deps-only --with-test
+          # ocamlformat is not a library dependency but the @fmt and @gen rules
+          # need the binary at the version pinned in .ocamlformat.
+          opam install ocamlformat.0.29.0
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Check formatting
+        run: opam exec -- dune build @fmt
+
+      - name: Golden expect-tests
+        run: opam exec -- dune runtest
+
+      - name: Acceptance gates (stdlib sweep, interpreter diff, opcode gen)
+        run: opam exec -- dune build @stdlib @interp @gen
