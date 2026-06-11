@@ -1,0 +1,4 @@
+(library
+ (name pytecode_interp)
+ (public_name pytecode.interp)
+ (libraries pytecode zarith))

@@ -19,6 +19,10 @@ dune promote                # accept changed golden output (review the diff firs
 dune build @stdlib          # acceptance gate: dumps + decodes + Phir-transforms the
                             # entire 3.13 stdlib (~10 s); run after any change to
                             # dump_bytecode.py, Decode, or Phir
+dune build @interp          # differential interpreter tests: every test/programs/*.py
+                            # runs under python3.13 AND the interpreter; stdout must
+                            # match byte for byte (single test: dune exec
+                            # test/interp_runner.exe -- test/programs FILTER)
 dune build @gen             # checks generated lib/opcode.ml(i) for drift vs the pinned
                             # CPython (runs python3.13 + ocamlformat); fix with dune promote
 dune exec pytecode -- dump foo.py    # dis-like pretty-print of the bytecode AST
@@ -47,6 +51,7 @@ source.py → tools/dump_bytecode.py (pinned 3.13) → versioned JSON envelope
 - **`Ast.code`** mirrors CPython code objects with exactly **one normalization** (specified in `doc/normalization.md`, the contract any future backend must honor): `CACHE`/`EXTENDED_ARG` stripped, args EXTENDED_ARG-folded, and all jump args + exception-table boundaries are **absolute instruction indices**, not byte offsets. Everything else is raw CPython semantics (args index `consts`/`names`/`localsplus`; flag bits like LOAD_GLOBAL's push-NULL bit preserved).
 - **Backends** implement `Backend_intf.S` and all return `Ast.code`, so every backend is validated by the same tests. `identity ()` must capture everything affecting output (python version, script hash, config, wire format) — `Cache.wrap` keys on it (BLAKE-256 of identity+path+source; Marshal values; transparent re-dump on any mismatch). A future pyml backend should run `Dump_script.source` in-process and reuse `Decode` verbatim; a native `.pyc` reader would construct `Ast.code` directly per the normalization contract.
 - **`Phir`** (Python High IR) is derived from `Ast.code`: statically known operands (constants, variable reads, NULL) fold into consuming instructions; `NOP`/`RESUME` dropped; superinstructions expanded; operator/intrinsic/flag args decoded into variants. Soundness rules live in `lib/phir.mli`: folding only captures a contiguous run of pure reads immediately before the consumer, never across a jump target or exception-table boundary; `Stack` operands always form a prefix of an operand list (push order; pop right-to-left); folded operands evaluate left-to-right at the instruction. Operand orders follow CPython's push order — check `Lib/dis` docs / bytecodes.c before changing any.
+- **`interp/`** (`pytecode.interp`) is a definitional interpreter over Phir, **strictly pure**: the whole interpreter state is one immutable record (persistent heap keyed by int addresses, output accumulated in the state, `cur_exc` for sys.exc_info); raised Python exceptions travel in the `Error` case of `'a Value.r`; frames are immutable records and generators are suspended frames stored in the heap. No refs, arrays-writes, Hashtbl, or Buffer anywhere — keep it that way (it is the basis for symbolic execution). Builtins are `Builtin "name"` tags dispatched inside the recursive knot in `interp.ml`. Semantics questions: consult `/tmp/cpython` (3.13 branch, `Python/bytecodes.c`) or clone it again.
 
 ## Generated files — do not hand-edit
 

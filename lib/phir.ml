@@ -47,6 +47,7 @@ type code = {
   filename : string;
   name : string;
   qualname : string;
+  docstring : string option;
   firstlineno : int;
   argcount : int;
   posonlyargcount : int;
@@ -730,6 +731,10 @@ let rec of_code (ast : Ast.code) : code =
     filename = ast.filename;
     name = ast.name;
     qualname = ast.qualname;
+    docstring =
+      (if Array.length ast.consts > 0 then
+         match ast.consts.(0) with Ast.Str s -> Some s | _ -> None
+       else None);
     firstlineno = ast.firstlineno;
     argcount = ast.argcount;
     posonlyargcount = ast.posonlyargcount;
@@ -1037,3 +1042,5 @@ let pp_code fmt c =
   let buf = Buffer.create 4096 in
   render buf c;
   Format.pp_print_string fmt (Buffer.contents buf)
+
+let instr_to_string = instr_str

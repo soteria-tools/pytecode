@@ -104,6 +104,9 @@ type code = {
   filename : string;
   name : string;
   qualname : string;
+  docstring : string option;
+      (** [co_consts.(0)] when it is a string — what [MAKE_FUNCTION] exposes as
+          [__doc__] (Phir inlines constants, so it must be carried here) *)
   firstlineno : int;
   argcount : int;
   posonlyargcount : int;
@@ -260,3 +263,7 @@ val has_varkw : code -> bool
 (** {2 Pretty-printing} *)
 
 val pp_code : Format.formatter -> code -> unit
+
+val instr_to_string : (string * Ast.local_kind) array -> instr -> string
+(** One instruction, rendered with the given localsplus for slot names — for
+    error messages and debugging. *)

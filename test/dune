@@ -18,3 +18,18 @@
  (alias stdlib)
  (action
   (run %{exe:stdlib_sweep.exe})))
+
+; Differential interpreter tests: dune build @interp
+
+(executable
+ (name interp_runner)
+ (modules interp_runner)
+ (libraries pytecode pytecode.interp unix))
+
+(rule
+ (alias interp)
+ (deps
+  (source_tree programs)
+  %{exe:interp_runner.exe})
+ (action
+  (run %{exe:interp_runner.exe} programs)))
