@@ -19,10 +19,12 @@ dune promote                # accept changed golden output (review the diff firs
 dune build @stdlib          # acceptance gate: dumps + decodes + Phir-transforms the
                             # entire 3.13 stdlib (~10 s); run after any change to
                             # dump_bytecode.py, Decode, or Phir
-dune build @interp          # differential interpreter tests: every test/programs/*.py
-                            # runs under python3.13 AND the interpreter; stdout must
-                            # match byte for byte (single test: dune exec
-                            # test/interp_runner.exe -- test/programs FILTER)
+dune build @interp          # differential interpreter tests: every test/programs/**/*.py
+                            # (organised into Python Language Reference sections, see
+                            # test/programs/README.md) runs under python3.13 AND the
+                            # interpreter; stdout must match byte for byte (single test:
+                            # dune exec test/interp_runner.exe -- test/programs FILTER,
+                            # where FILTER matches anywhere in the file's path)
 dune build @gen             # checks generated lib/opcode.ml(i) for drift vs the pinned
                             # CPython (runs python3.13 + ocamlformat); fix with dune promote
 dune exec pytecode -- dump foo.py    # dis-like pretty-print of the bytecode AST

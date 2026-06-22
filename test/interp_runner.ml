@@ -53,13 +53,22 @@ let () =
         prerr_endline "usage: interp_runner [DIR] [FILTER]";
         exit 2
   in
+  (* Programs are organised into subfolders mirroring the Python Language
+     Reference (e.g. programs/6_expressions/6.7_arithmetics/...), so walk the
+     tree rather than just the top level. *)
+  let rec collect dir =
+    Sys.readdir dir |> Array.to_list |> List.sort String.compare
+    |> List.concat_map (fun entry ->
+        let path = Filename.concat dir entry in
+        if Sys.is_directory path then collect path
+        else if Filename.check_suffix path ".py" then [ path ]
+        else [])
+  in
   let files =
-    Sys.readdir dir |> Array.to_list
-    |> List.filter (fun f -> Filename.check_suffix f ".py")
+    collect dir
     |> List.filter (fun f ->
         match filter with None -> true | Some s -> contains_sub f s)
     |> List.sort String.compare
-    |> List.map (Filename.concat dir)
   in
   let (module B : Backend_intf.S) = Loader.default_backend () in
   let compiled = B.compile_batch files in
