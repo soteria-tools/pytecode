@@ -193,6 +193,7 @@ let boot () : state =
   let entries =
     List.map (fun (n, a) -> (Str n, Ref a)) (types @ excs)
     @ List.map (fun n -> (Str n, Builtin n)) builtin_functions
+    @ [ (Str "NotImplemented", Not_implemented) ]
   in
   let builtins_ref, st = alloc st (Dict entries) in
   { st with builtins = addr builtins_ref }
@@ -643,6 +644,7 @@ and py_repr st (v : value) : string r =
       Ok ("<bound method of " ^ r ^ ">", st)
   | Code_obj c -> Ok ("<code object " ^ c.qualname ^ ">", st)
   | Null -> Ok ("<NULL>", st)
+  | Not_implemented -> Ok ("NotImplemented", st)
   | Ref a -> (
       match heap_get st a with
       | List xs ->
@@ -1203,11 +1205,13 @@ and binary st (op : Phir.binop) ~inplace a b : value r =
       instance_binop st op ~inplace a b
   | _, a, b when is_number a && is_number b -> num_binop st op a b
   | Add, Str x, Str y -> Ok (Str (x ^ y), st)
+  | Add, Str _, _ -> concat_type_error st "str" b
   | Mul, Str s, n when as_z n <> None ->
       Ok (Str (String.concat "" (repeat_seq [ s ] (Option.get (as_z n)))), st)
   | Mul, n, Str s when as_z n <> None ->
       Ok (Str (String.concat "" (repeat_seq [ s ] (Option.get (as_z n)))), st)
   | Add, Tuple xs, Tuple ys -> Ok (Tuple (xs @ ys), st)
+  | Add, Tuple _, _ -> concat_type_error st "tuple" b
   | Mul, Tuple xs, n when as_z n <> None ->
       Ok (Tuple (repeat_seq xs (Option.get (as_z n))), st)
   | _, Ref x, _ when heap_is_list st x -> list_binop st op ~inplace x b
@@ -1230,6 +1234,14 @@ and binop_type_error : 'a. state -> Phir.binop -> value -> value -> 'a r =
   raise_py st "TypeError"
     (Printf.sprintf "unsupported operand type(s) for %s: '%s' and '%s'"
        (binop_symbol op) (type_name st a) (type_name st b))
+
+(* CPython gives sequence concatenation (str/list/tuple + wrong type) a
+   dedicated message rather than the generic "unsupported operand type(s)". *)
+and concat_type_error : 'a. state -> string -> value -> 'a r =
+ fun st ltype b ->
+  raise_py st "TypeError"
+    (Printf.sprintf "can only concatenate %s (not \"%s\") to %s" ltype
+       (type_name st b) ltype)
 
 and num_binop st op a b : value r =
   let both_int =
@@ -1304,6 +1316,7 @@ and list_binop st op ~inplace x_addr b : value r =
       else
         let l, st = alloc st (List repeated) in
         Ok (l, st)
+  | Add, List _, _ when not inplace -> concat_type_error st "list" b
   | _, List _, _ -> binop_type_error st op (Ref x_addr) b
   | _ -> assert false
 
@@ -1358,9 +1371,13 @@ and instance_binop st op ~inplace a b : value r =
   let try_dunder st v name args =
     let* m, st = find_dunder st v name in
     match m with
-    | Some f ->
+    | Some f -> (
         let* r, st = call st f args [] in
-        Ok (Some r, st)
+        (* a dunder returning NotImplemented means "not applicable here",
+           so the operator protocol falls through to the next candidate. *)
+        match r with
+        | Not_implemented -> Ok (None, st)
+        | _ -> Ok (Some r, st))
     | None -> Ok (None, st)
   in
   let* r, st =

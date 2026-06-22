@@ -1,0 +1,10 @@
+print(1 + 1)
+print(100 - 250)
+print(-5 + 3)
+print(2 ** 64 + 1)
+print(10 - 3 - 2)
+print((-7) - (-10))
+print(0 + 0, 0 - 0)
+a = 1_000_000
+print(a + a, a - a)
+print(- -5)

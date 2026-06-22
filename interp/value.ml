@@ -28,6 +28,7 @@ type value =
   | Code_obj of Phir.code (* a code constant (consumed by Make_function) *)
   | Ref of int (* heap address *)
   | Null (* CPython's NULL stack sentinel *)
+  | Not_implemented (* the NotImplemented singleton *)
 
 and obj =
   | List of value list
@@ -135,6 +136,7 @@ let type_name st (v : value) =
   | Bound _ -> "method"
   | Code_obj _ -> "code"
   | Null -> "<NULL>"
+  | Not_implemented -> "NotImplementedType"
   | Ref a -> (
       match heap_get st a with
       | List _ -> "list"
