@@ -1,0 +1,15 @@
+# 6.17 Operator precedence: ** > unary > * / // % > + - > shifts > & > ^ > | >
+# comparisons > not > and > or (and ** is right-associative).
+print(2 + 3 * 4)
+print(2 * 3**2)
+print(-(2**2), -2**2)
+print(1 + 2 << 3)
+print(1 << 2 | 1)
+print(2 + 3 == 5)
+print(True or False and False)
+print(not 1 == 1)
+print(1 < 2 == True)
+print(3 + 4 * 2 > 10)
+print(5 - 2 - 1)
+print(2**3**2)
+print(6 & 2 | 1 ^ 4)
