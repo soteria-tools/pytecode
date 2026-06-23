@@ -257,7 +257,8 @@ and instance_eq_value st a b : value r =
       let* r, st = try_richcmp st second "__eq__" [ first ] in
       match r with Some v -> Ok (v, st) | None -> Ok (Bool (a = b), st))
 
-(* raw result of x != y for instances: a custom __ne__, else `not __eq__` *)
+(* ref: 3.3.1 __ne__ — raw result of x != y for instances: a custom __ne__ (with
+   reflected-operand priority), else the negation of __eq__. *)
 and instance_ne_value st a b : value r =
   let* prio, st = reflected_priority st a b "__ne__" in
   let first, second = if prio then (b, a) else (a, b) in
@@ -320,6 +321,8 @@ and instance_order st a b dunder rdunder sym : bool r =
   let* v, st = instance_order_value st a b dunder rdunder sym in
   py_truth st v
 
+(* ref: 3.3.1 / 6.10.1 — the raw (possibly non-bool) result of an ordering
+   comparison between instances; [instance_order] coerces it to a bool. *)
 and instance_order_value st a b dunder rdunder sym : value r =
   let* prio, st = reflected_priority st a b rdunder in
   let t1, n1, a1, t2, n2, a2 =
@@ -1766,8 +1769,9 @@ and gen_resume st a (sent : value) : [ `Yield of value | `Return of value ] r =
       | Error (exc, st) -> Error (exc, st))
   | _ -> invalid_arg "gen_resume"
 
-(* resume a suspended frame as though its current instruction raised [exc]:
-   consult the frame's exception table, like run_frame's error path. *)
+(* ref: 6.2.9 (generator.throw) / 4.3 — resume a suspended frame as though its
+   current instruction raised [exc]: consult the frame's exception table, like
+   run_frame's error path. *)
 and resume_with_error st (f : frame) exc : frame_outcome r =
   match find_handler f.code.exn_table f.idx with
   | None -> Error (exc, st)
@@ -1796,6 +1800,8 @@ and gen_throw st a exc : [ `Yield of value | `Return of value ] r =
 
 (* ---------- operators ----------------------------------------------- *)
 
+(* ref: 3.3.8 Emulating numeric types — the special-method name for each binary
+   operator (the reflected and in-place forms add the "r"/"i" prefix). *)
 and binop_dunder : Phir.binop -> string = function
   | Add -> "add"
   | Sub -> "sub"
@@ -2349,6 +2355,8 @@ and contains st item seq : bool r =
 
 (* ---------- subscripts and slices ----------------------------------- *)
 
+(* ref: 6.3.2 Subscriptions — normalise a sequence index: a negative index counts
+   from the end, and an out-of-range index raises IndexError. *)
 and norm_index st ~len ~what z : int r =
   let i = Z.to_int z in
   let i = if i < 0 then i + len else i in
@@ -3181,6 +3189,10 @@ and run_frame st (f : frame) : frame_outcome r =
           in
           run_frame st { f with stack = exc :: stack; idx = e.target_idx })
 
+(* The bytecode interpreter core: execute one Phir/CPython instruction, yielding
+   the next frame ([Next]), a jump ([Goto]) or a frame result ([Fin]). Each case
+   maps an opcode to its expression/statement semantics; see the per-case ref
+   pointers (the surface construct each opcode came from). *)
 and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
   let op1 st f v =
     let* (vals, f), st = eval_operands st f [ v ] in
@@ -4059,6 +4071,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       let* n, st = py_len st (List.hd f.stack) in
       Ok (Next (push f (Int (Z.of_int n))), st)
 
+(* ref: 3.2.6 Set types — collect the distinct (hashable) elements preserving
+   first-seen order, as set()/{...}/a set comprehension does. *)
 and dedup_set st vals : value list r =
   fold_m st
     (fun st acc v ->
