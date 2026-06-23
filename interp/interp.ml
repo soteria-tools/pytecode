@@ -4127,6 +4127,10 @@ and to_index st v : Z.t r =
             (Printf.sprintf "'%s' object cannot be interpreted as an integer"
                (type_name st v)))
 
+(* ref: the Built-in Functions (Library Reference, functions.html) and the
+   methods CPython installs on built-in / exception / generator types. Dispatch
+   is by name; cases that drive a data-model protocol also cite the relevant
+   3.3.x special method. *)
 and call_builtin st name (args : value list) (kwargs : (string * value) list) :
     value r =
   let kw k = List.assoc_opt k kwargs in
@@ -4134,7 +4138,7 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
     raise_py st "TypeError" (name ^ "(): wrong number of arguments")
   in
   match (name, args) with
-  (* ---- functions ---- *)
+  (* ---- built-in functions (Library Reference: Built-in Functions) ---- *)
   | "print", args ->
       let* parts, st = map_m st py_str args in
       let* sep, st =
@@ -4154,6 +4158,7 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
       (* ref: 6.x — ascii(x) is repr(x) with non-ASCII codepoints escaped *)
       let* s, st = py_repr st v in
       Ok (Str (ascii_escape s), st)
+  (* ref: 3.3.8 __abs__ — abs(); for complex it is the magnitude (hypot). *)
   | "abs", [ v ] -> (
       match v with
       | Int z -> Ok (Int (Z.abs z), st)
@@ -4267,6 +4272,8 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
       Ok (Str (utf8_encode cp), st)
   | "ord", [ Str s ] when utf8_length s = 1 ->
       Ok (Int (Z.of_int (fst (utf8_decode_at s 0))), st)
+  (* ref: the built-in callable()/getattr()/setattr()/delattr()/hasattr() — they
+     expose attribute access (3.3.2) and the call protocol (__call__, 3.3.8). *)
   | "callable", [ v ] -> (
       match v with
       | Builtin _ | Bound _ -> Ok (Bool true, st)
@@ -4397,6 +4404,7 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
             if t <> want_all then Ok (Bool (not want_all), st) else scan st
       in
       scan st
+  (* ref: the built-in vars() — an object's (or class's) __dict__ (3.2.8.2). *)
   | "vars", [ v ] -> (
       match deref st v with
       | Some (Instance { dict; _ }) -> Ok (Ref dict, st)
@@ -4486,6 +4494,8 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
   | "format", [ v; Str spec ] ->
       let* s, st = Py_str.format_value st v spec in
       Ok (Str s, st)
+  (* ref: the built-in super() — a proxy whose attribute access delegates to the
+     class after [cls] in type(obj)'s MRO (see [super_getattr]). *)
   | "super", [ (Ref ca as _c); obj ] -> (
       match heap_get st ca with
       | Class _ ->
@@ -4763,6 +4773,8 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
   | "BaseExceptionGroup.derive", [ self; excs ] ->
       let* items, st = to_list st excs in
       eg_derive st self items
+  (* ref: 6.2.9.1 / 3.5 — the generator-iterator methods send()/__next__()/
+     close()/throw(). *)
   | "generator.send", [ g; v ] -> gen_send st g v
   | "generator.__next__", [ g ] -> gen_send st g None_
   | "generator.close", [ g ] -> (
@@ -4787,6 +4799,8 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
               in
               Error (exc, st))
       | _ -> raise_py st "TypeError" "throw() expects a generator")
+  (* ref: the property() descriptor (3.3.2.3) — @x.setter / @x.getter return a
+     new property sharing the other accessor. *)
   | "property.setter", [ p; f ] -> (
       match deref st p with
       | Some (Property { fget; _ }) ->
@@ -4808,6 +4822,8 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
           type_method st tag meth args kwargs
       | None -> raise_py st "RuntimeError" ("unknown builtin: " ^ name))
 
+(* ref: 5.x BaseException.args — the tuple of constructor arguments stored on an
+   exception instance. *)
 and exc_args st self : value list r =
   match deref st self with
   | Some (Instance { dict; _ }) -> (
@@ -4823,6 +4839,7 @@ and exc_attr st self name : value r =
       Ok (Option.value v ~default:None_, st)
   | _ -> Ok (None_, st)
 
+(* ref: 8.4 / Built-in Exceptions — is [v] an instance of BaseException? *)
 and is_exception_instance st v =
   match deref st v with
   | Some (Instance { cls; _ }) ->
@@ -4835,14 +4852,16 @@ and exc_repr st self : string r =
   let* parts, st = map_m st py_repr args in
   Ok (Printf.sprintf "%s(%s)" (type_name st self) (String.concat ", " parts), st)
 
+(* ref: 8.4 — is [v] a BaseExceptionGroup (so except* recurses into it)? *)
 and is_exception_group st v =
   match deref st v with
   | Some (Instance { cls; _ }) ->
       List.mem (builtin_class_addr st "BaseExceptionGroup") (cls_of st cls).mro
   | _ -> false
 
-(* the except*/split condition: an exception type, tuple of types, or a
-   predicate callable applied to each leaf exception *)
+(* ref: 8.4 (except* / BaseExceptionGroup.split) — the match condition is an
+   exception type, a tuple of types, or a predicate callable applied to each
+   leaf exception. *)
 and eg_condition_matches st condition x : bool r =
   let is_type =
     match (deref st condition, condition) with
@@ -4855,7 +4874,8 @@ and eg_condition_matches st condition x : bool r =
     let* r, st = call st condition [ x ] [] in
     py_truth st r
 
-(* derive a new group of the same type, message, with the given sub-exceptions *)
+(* ref: 8.4 / BaseExceptionGroup.derive — a new group of the same type and
+   message holding the given sub-exceptions (used by split/subgroup). *)
 and eg_derive st self excs : value r =
   let* msg, st = exc_attr st self "message" in
   let cls =
@@ -4866,8 +4886,9 @@ and eg_derive st self excs : value r =
   let lst, st = alloc st (List excs) in
   instantiate st cls [ msg; lst ] []
 
-(* recursively partition self.exceptions into (match, rest) groups, preserving
-   nested structure; either side is None when empty *)
+(* ref: 8.4 / BaseExceptionGroup.split — recursively partition self.exceptions
+   into (matching, rest) groups, preserving nested structure; either side is None
+   when empty. *)
 and eg_split_pair st self condition : (value * value) r =
   let* excs, st = exc_attr st self "exceptions" in
   let items = match excs with Tuple xs -> xs | _ -> [] in
@@ -4914,6 +4935,8 @@ and eg_match st exc_value match_type : (value * value) r =
       eg_split_pair st exc_value match_type
     else Ok ((None_, exc_value), st)
 
+(* ref: 6.2.9 / generator.send — resume the generator with [v] as the value of
+   the suspended yield; on return, raise StopIteration carrying the value. *)
 and gen_send st g v : value r =
   match deref st g with
   | Some (Gen _) -> (
@@ -4926,6 +4949,8 @@ and gen_send st g v : value r =
           Error (exc, st))
   | _ -> raise_py st "TypeError" "send() expects a generator"
 
+(* ref: the built-in types' methods (Library Reference: stdtypes) — dispatch a
+   `tag.method` call (str.upper, list.append, ...) to the per-type module. *)
 and type_method st tag meth args kwargs : value r =
   match tag with
   | "str" -> Py_str.str_method st meth args
@@ -4942,6 +4967,9 @@ and type_method st tag meth args kwargs : value r =
 
 (* ---------- builtin type constructors ------------------------------- *)
 
+(* ref: the built-in types as callables (int(), str(), list(), dict(), range(),
+   slice(), property(), ... — Library Reference: Built-in Functions / stdtypes)
+   — construct a value of built-in type [tag] from the call arguments. *)
 and builtin_class_call st tag args kwargs : value r =
   match (tag, args) with
   (* ref: 3.2.13 Internal types — slice objects (slice(stop) / slice(start,stop
