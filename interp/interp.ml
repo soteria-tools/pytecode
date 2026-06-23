@@ -52,6 +52,9 @@ let advance f = { f with idx = f.idx + 1 }
 
 (* ---------- dictionaries (insertion-ordered association lists) ----- *)
 
+(* ref: 3.2.7.1 Dictionaries — keys are matched by equality ([py_eq], ==), not
+   identity (6.10.1), so the lookup/insert/delete helpers scan the association
+   list with [py_eq]; insertion order is preserved (a guaranteed property). *)
 let rec dict_find st pairs key : value option r =
   match pairs with
   | [] -> Ok (None, st)
@@ -113,8 +116,9 @@ and dget st a key = dict_find st (dict_pairs st a) key
 
 (* ---------- equality ----------------------------------------------- *)
 
-(* ref: 3.2 — a built-in-type subclass instance that does not override the
-   relevant comparison dunder(s) compares using its underlying payload. *)
+(* ref: 3.2 / 3.3.1 — a built-in-type subclass instance that does not override
+   the relevant comparison dunder(s) compares using its underlying payload (so
+   `class M(int)` without __eq__ compares as an int). *)
 and cmp_unwrap st v dunders : value r =
   match deref st v with
   | Some (Instance { cls; native; _ }) when native <> None_ ->
@@ -131,6 +135,10 @@ and cmp_unwrap st v dunders : value r =
 and eq_dunders = [ "__eq__"; "__ne__" ]
 and order_dunders = [ "__lt__"; "__gt__"; "__le__"; "__ge__" ]
 
+(* ref: 6.10.1 Value comparisons — the == operator. Numbers compare across the
+   numeric tower (3.2.4), str/bytes by content, tuple/list/set/dict structurally
+   (element-wise, by value), instances via __eq__ (3.3.1, see [instance_eq]);
+   any other immediate (None/Ellipsis/NotImplemented/builtins) by identity. *)
 and py_eq st a b : bool r =
   let* a, st = cmp_unwrap st a eq_dunders in
   let* b, st = cmp_unwrap st b eq_dunders in
@@ -161,6 +169,7 @@ and py_eq st a b : bool r =
      NotImplemented/builtins are equal only to themselves *)
   | _ -> Ok (a = b, st)
 
+(* ref: 6.10.1 — sequences compare equal iff same length and pairwise == *)
 and seq_eq st xs ys =
   if List.length xs <> List.length ys then Ok (false, st)
   else
@@ -168,6 +177,8 @@ and seq_eq st xs ys =
       (fun st acc (x, y) -> if not acc then Ok (false, st) else py_eq st x y)
       true (List.combine xs ys)
 
+(* ref: 6.10.1 / 3.2.7.1 — two dicts are equal iff same length and every key of
+   one maps (by ==) to an == value in the other; order is irrelevant *)
 and dict_eq st xs ys =
   if List.length xs <> List.length ys then Ok (false, st)
   else
@@ -179,10 +190,13 @@ and dict_eq st xs ys =
           match found with None -> Ok (false, st) | Some v' -> py_eq st v v')
       true xs
 
+(* ref: 6.10.1 / 3.2.6 — sets compare equal iff equal size and one is a subset
+   of the other (i.e. same membership) *)
 and set_eq st xs ys =
   if List.length xs <> List.length ys then Ok (false, st)
   else set_subset st xs ys
 
+(* ref: 3.2.6 — set.issubset (<=): every element of xs is a member of ys *)
 and set_subset st xs ys =
   fold_m st
     (fun st acc x ->
@@ -260,6 +274,10 @@ and instance_ne_value st a b : value r =
 
 (* ---------- ordering ----------------------------------------------- *)
 
+(* ref: 6.10.1 Value comparisons — the < operator. Numbers numerically (3.2.4),
+   str/bytes lexicographically by code point/byte, tuple/list lexicographically
+   ([seq_lt]), sets by strict subset (3.2.6), instances via __lt__/__gt__
+   ([instance_order]); otherwise order comparison raises TypeError. *)
 and py_lt st a b : bool r =
   let* a, st = cmp_unwrap st a order_dunders in
   let* b, st = cmp_unwrap st b order_dunders in
@@ -284,6 +302,8 @@ and py_lt st a b : bool r =
       instance_order st a b "__lt__" "__gt__" "<"
   | _ -> order_type_error st a b "<"
 
+(* ref: 6.10.1 — lexicographic ordering of sequences: the first pair of unequal
+   corresponding elements decides; otherwise a proper prefix sorts first. *)
 and seq_lt st xs ys =
   match (xs, ys) with
   | [], [] -> Ok (false, st)
@@ -338,6 +358,9 @@ and py_compare_value st (op : Phir.cmpop) a b : value r =
     let* v, st = py_compare st op a b in
     Ok (Bool v, st)
 
+(* ref: 6.10 Comparisons — the boolean result of a comparison operator: ==/!=
+   use value equality, </> ordering, and <=/>= the IEEE/subset/__le__ fallbacks
+   below. *)
 and py_compare st (op : Phir.cmpop) a b : bool r =
   match op with
   | Eq -> py_eq st a b
@@ -444,6 +467,10 @@ and py_truth st (v : value) : bool r =
       | _ -> Ok (true, st))
   | _ -> Ok (true, st)
 
+(* ref: 3.3.1 __len__ / the built-in len() — number of items in a container; a
+   str's length counts code points (not bytes), range's is computed
+   arithmetically, and an instance delegates to __len__ (which must return a
+   non-negative int). *)
 and py_len st (v : value) : int r =
   match v with
   | Str s -> Ok (utf8_length s, st)
@@ -553,6 +580,10 @@ and py_hash st (v : value) : value r =
 
 (* ---------- repr and str ------------------------------------------- *)
 
+(* ref: 3.3.1 __repr__ / the built-in repr() — the "official", ideally
+   round-trippable, string for a value. Each built-in type has the form shown in
+   the Standard type hierarchy (3.2); an instance delegates to __repr__, falling
+   back to "<Type object>" (or the exception form, 5.x) when undefined. *)
 and py_repr st (v : value) : string r =
   match v with
   | None_ -> Ok ("None", st)
@@ -674,6 +705,9 @@ and type_repr st (v : value) : string r =
       | _ -> py_repr st v)
   | _ -> py_repr st v
 
+(* ref: 3.3.1 __str__ / the built-in str() and print() — the "informal",
+   readable string. The default (object.__str__) is __repr__, so non-instances
+   and instances without __str__ fall through to [py_repr]. *)
 and py_str st (v : value) : string r =
   match v with
   | Str s -> Ok (s, st)
@@ -699,6 +733,10 @@ and py_str st (v : value) : string r =
 
 (* ---------- iteration ---------------------------------------------- *)
 
+(* ref: 3.3.1 __iter__ / the built-in iter() — return an iterator over [v].
+   Built-in sequences/containers get a dedicated iterator object; an iterator
+   returns itself; an instance delegates to __iter__. (The sequence-protocol
+   fallback via __getitem__ is not modelled.) *)
 and py_iter st (v : value) : value r =
   match v with
   | Str s ->
@@ -755,7 +793,9 @@ and not_iterable : 'a. state -> value -> 'a r =
   raise_py st "TypeError"
     (Printf.sprintf "'%s' object is not iterable" (type_name st v))
 
-(* One iteration step: [Some v] or [None] when exhausted. *)
+(* ref: 3.3.1 __next__ / the built-in next() — advance an iterator. One step:
+   [Some v], or [None] when exhausted (a __next__ that raises StopIteration is
+   reported as exhaustion). *)
 and py_next st (itv : value) : value option r =
   match itv with
   | Ref a -> (
@@ -889,7 +929,9 @@ and instance_slots st cls_addr : string list option =
   in
   go [] classes
 
-(* Look [name] up through a class's MRO; the raw stored value, unbound. *)
+(* ref: 3.3.2.1 / "method resolution order" — look [name] up along the
+   C3-linearized MRO, returning the first matching class-dict entry (raw and
+   unbound; binding happens in [bind_class_value]). *)
 and type_lookup st cls_addr name : value option r =
   let rec go st = function
     | [] -> Ok (None, st)
@@ -899,7 +941,10 @@ and type_lookup st cls_addr name : value option r =
   in
   go st (cls_of st cls_addr).mro
 
-(* Bind a value found on a class, as attribute access on an instance does. *)
+(* ref: 3.2.8.1 Instance methods / 3.3.2.4 — bind a value fetched from a class
+   as instance attribute access does: a plain function (or builtin) becomes a
+   bound method, a classmethod binds the class, a staticmethod is returned
+   unwrapped. *)
 and bind_class_value st found ~inst ~cls_addr =
   match deref st found with
   | Some (Func _) -> Bound (found, inst)
@@ -907,8 +952,9 @@ and bind_class_value st found ~inst ~cls_addr =
   | Some (Staticmethod m) -> m
   | _ -> ( match found with Builtin _ -> Bound (found, inst) | _ -> found)
 
-(* A *special method*: looked up on the type only (never the instance
-   dict), returned bound. [None] for non-instances and missing methods. *)
+(* ref: 3.3.9 Special method lookup — implicit invocations of a special (dunder)
+   method look it up on the *type*, never the instance dict, and bind it. [None]
+   for non-instances and for missing methods. *)
 and find_dunder st v name : value option r =
   match deref st v with
   | Some (Instance { cls; _ }) -> (
@@ -1042,6 +1088,10 @@ and class_qualified_name st a : string r =
   let modname = match m with Some (Str s) -> s | _ -> "builtins" in
   Ok ((if modname = "builtins" then c.cname else modname ^ "." ^ c.cname), st)
 
+(* ref: 3.3.2 / 6.3.1 — attribute access on a *class* object: the class
+   introspection attributes (__name__/__qualname__/__mro__/__bases__/__dict__/
+   __doc__, 3.2.8.2) plus MRO lookup, with classmethod/staticmethod/descriptors
+   resolved against the class itself (instance is None). *)
 and class_getattr st cls_addr name : value r =
   let c = cls_of st cls_addr in
   match name with
@@ -1080,7 +1130,10 @@ and class_getattr st cls_addr name : value r =
               Ok (Builtin (tag ^ "." ^ name), st)
           | _ -> attribute_error st (Ref cls_addr) name))
 
-(* General attribute access, dispatching on the value's kind. *)
+(* ref: 6.3.1 Attribute references — evaluating `primary.name`. Dispatches on the
+   value's kind: built-in types expose their bound methods (and a few read-only
+   attributes, 3.2.4/3.2.8/3.2.13), instances go through __getattribute__/
+   __getattr__ ([instance_getattr]), classes through [class_getattr]. *)
 and getattr_value st (v : value) name : value r =
   let bound_builtin tag =
     if List.mem name (builtin_method_names tag) then
@@ -1213,7 +1266,9 @@ and getattr_value st (v : value) name : value r =
       | _ -> getattr_value st func name)
   | _ -> attribute_error st v name
 
-(* super: look up after [cls] in the MRO of [type(self)], bind to self. *)
+(* ref: the built-in super() (and 3.3.3.6 super.__getattribute__) — attribute
+   access on a super object searches the MRO of type(self) *after* [cls], so a
+   method delegates to the next class in the linearization, bound to self. *)
 and super_getattr st ~cls ~self name : value r =
   let self_cls =
     match deref st self with
@@ -1352,6 +1407,9 @@ and delattr_value st (v : value) name : unit r =
 
 (* ---------- isinstance / issubclass -------------------------------- *)
 
+(* ref: 3.3.4 — the concrete-type test behind isinstance(): does [v] directly
+   have built-in type [tag]? (Subclass/MRO membership is handled separately in
+   [isinstance_value].) *)
 and value_matches_builtin st tag (v : value) =
   match tag with
   | "object" -> true
@@ -1379,6 +1437,10 @@ and value_matches_builtin st tag (v : value) =
   | "NotImplementedType" -> v = Not_implemented
   | _ -> false
 
+(* ref: 3.3.4 / the built-in isinstance() — [v] is an instance of a type, of any
+   type in a tuple, or of any member of a union (6.7). A subclass instance
+   matches via its MRO; a class is an instance of its metaclass (3.3.3). (The
+   metaclass __instancecheck__ override is applied by the [isinstance] builtin.) *)
 and isinstance_value st (v : value) (cls_v : value) : bool r =
   match cls_v with
   | Tuple cs ->
@@ -1434,6 +1496,9 @@ and exc_is st (exc : value) clsname : bool r =
 
 (* ---------- class creation ----------------------------------------- *)
 
+(* ref: method resolution order (type.__mro__, 3.2.8.2) — the C3 linearization
+   of the bases; an inconsistent hierarchy has no valid order (TypeError in
+   CPython). See "The Python 2.3 Method Resolution Order". *)
 and c3_linearize st bases : int list =
   let mro_of b = (cls_of st b).mro in
   let seqs = List.map mro_of bases @ [ bases ] in
@@ -1683,6 +1748,9 @@ and instantiate_plain st cls_addr args kwargs : value r =
 
 (* ---------- generators --------------------------------------------- *)
 
+(* ref: 6.2.9 Yield expressions / 3.5 — resume a generator by running its saved
+   frame until the next yield (the [sent] value becomes the result of that yield
+   expression, 6.2.9) or until it returns/falls off the end. *)
 and gen_resume st a (sent : value) : [ `Yield of value | `Return of value ] r =
   match heap_get st a with
   | Gen { gframe = None; _ } -> Ok (`Return None_, st)
@@ -1758,6 +1826,11 @@ and binop_symbol : Phir.binop -> string = function
   | Rshift -> ">>"
   | Mat_mul -> "@"
 
+(* ref: 6.7 Binary arithmetic / 6.8 Shifting / 6.9 Binary bitwise operations,
+   and their augmented (in-place) forms (7.2.1, ~inplace). Numbers go to
+   [num_binop]/[complex_binop]; str/bytes/tuple/list support +/*; PEP 604 type
+   unions handle `|` over types (6.7); dict `|` merges (PEP 584); sets do
+   algebra; instances use the operator protocol (3.3.8, [instance_binop]). *)
 and binary st (op : Phir.binop) ~inplace a b : value r =
   let repeat_seq xs n =
     List.concat (List.init (max 0 (Z.to_int n)) (fun _ -> xs))
@@ -1912,6 +1985,9 @@ and concat_type_error : 'a. state -> string -> value -> 'a r =
     (Printf.sprintf "can only concatenate %s (not \"%s\") to %s" ltype
        (type_name st b) ltype)
 
+(* ref: 6.7/6.8/6.9 / 3.2.4 — the operators on real numbers (int/bool/float):
+   int op int stays int, except true division (/) always yields a float; any
+   float operand promotes the result to float. *)
 and num_binop st op a b : value r =
   let both_int =
     match (as_z a, as_z b) with Some x, Some y -> Some (x, y) | _ -> None
@@ -2067,6 +2143,9 @@ and complex_binop st op a b : value r =
             Ok (Complex (m *. Float.cos wi, m *. Float.sin wi), st))
   | _ -> binop_type_error st op a b
 
+(* ref: 3.2.5.2 Mutable sequences / 6.7 — list concatenation (list + list) and
+   repetition by an int; the in-place forms (+=/*=) mutate the left list
+   (list.__iadd__ extends by any iterable; here the operand is already a list). *)
 and list_binop st op ~inplace x_addr b : value r =
   match (op, heap_get st x_addr, deref st b) with
   | Add, List xs, Some (List ys) ->
@@ -2085,6 +2164,9 @@ and list_binop st op ~inplace x_addr b : value r =
   | _, List _, _ -> binop_type_error st op (Ref x_addr) b
   | _ -> assert false
 
+(* ref: 3.2.6 Set types — set algebra: union (|), intersection (&), difference
+   (-), symmetric difference (^). The result type follows the left operand
+   ([frozen] = it was a frozenset). *)
 and set_binop st op xs ys ~frozen : value r =
   let* result, st =
     match (op : Phir.binop) with
@@ -2180,6 +2262,9 @@ and instance_binop st op ~inplace a b : value r =
                     (Option.value na ~default:a)
                     (Option.value nb ~default:b))))
 
+(* ref: 6.6 Unary arithmetic and bitwise operations (- via __neg__, ~ via
+   __invert__; 3.3.8) and 6.11 (`not`); To_bool applies the bool() coercion
+   (3.3.1 __bool__, see [py_truth]). *)
 and unary st (op : Phir.unop) v : value r =
   match (op, v) with
   | Negative, Int z -> Ok (Int (Z.neg z), st)
@@ -2205,6 +2290,9 @@ and unary st (op : Phir.unop) v : value r =
       raise_py st "TypeError"
         ("bad operand type for unary operator: " ^ type_name st v)
 
+(* ref: 6.10.2 Membership test operations — `in` / `not in`: use __contains__
+   (3.3.7) if defined, else iterate; for str/bytes it is a substring/subsequence
+   test, and `int in bytes` tests a byte value (3.2.5.1). *)
 and contains st item seq : bool r =
   match seq with
   | Str hay -> (
@@ -2268,6 +2356,8 @@ and norm_index st ~len ~what z : int r =
     raise_py st "IndexError" (what ^ " index out of range")
   else Ok (i, st)
 
+(* ref: 6.3.3 Slicings — read (start, stop, step) from a slice object as ints
+   (or None); the bounds must be integers and the step must be non-zero. *)
 and slice_args st = function
   | Slice (a, b, c) -> (
       let cv = function
@@ -2284,6 +2374,10 @@ and slice_args st = function
       | _ -> raise_py st "TypeError" "slice indices must be integers or None")
   | _ -> raise_py st "TypeError" "expected a slice"
 
+(* ref: 6.3.2 Subscriptions / 6.3.3 Slicings / 3.3.7 __getitem__ — evaluate
+   `obj[index]`: built-in sequences index by int or slice, mappings by key
+   (KeyError if absent), instances via __getitem__, and Class[..] builds a
+   generic alias (3.3.5). *)
 and subscript st obj index : value r =
   (* ref: 3.3.8 __index__ — for builtin sequence indexing, a non-integer index
      that is an instance is losslessly converted to an int via __index__. (A
@@ -2464,6 +2558,9 @@ and subscript st obj index : value r =
       raise_py st "TypeError"
         (Printf.sprintf "'%s' object is not subscriptable" (type_name st obj))
 
+(* ref: 7.2 (assignment to a subscription) / 3.3.7 __setitem__ — `obj[index] = v`
+   for mutable sequences (item and slice assignment), mappings, bytearray, and
+   instances. *)
 and store_subscript st obj index v : unit r =
   match obj with
   | Ref a -> (
@@ -2570,6 +2667,8 @@ and slice_lo xs = function
       if i < 0 then 0 else if i > len then len else i
   | None -> 0
 
+(* ref: 7.5 The del statement (of a subscription) / 3.3.7 __delitem__ —
+   `del obj[index]` for mutable sequences, mappings, bytearray, and instances. *)
 and del_subscript st obj index : unit r =
   match obj with
   | Ref a -> (
