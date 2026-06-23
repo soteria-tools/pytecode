@@ -1,6 +1,8 @@
 (* Pure numeric helpers (rounding, exact float ratio).
    [open]ed by [Interp] and [Py_num]. *)
 
+(* ref: the built-in round() — rounds half to even ("banker's rounding"), so
+   round(0.5) == 0 and round(2.5) == 2. *)
 let round_half_even x =
   let fl = Float.floor x in
   let frac = x -. fl in
@@ -9,6 +11,8 @@ let round_half_even x =
   else if Float.rem fl 2. = 0. then fl
   else fl +. 1.
 
+(* ref: round(int, ndigits) with ndigits < 0 — round an integer to a multiple of
+   10**k, half-to-even (round(15, -1) == 20, round(25, -1) == 20). *)
 let round_int_pow10 z k =
   let s = Z.pow (Z.of_int 10) k in
   let q = Z.div z s and r = Z.rem z s in
@@ -26,6 +30,8 @@ let round_int_pow10 z k =
   in
   Z.mul q s
 
+(* ref: float.as_integer_ratio — the exact (numerator, denominator) of a float
+   (a dyadic rational, since floats are binary). *)
 let float_as_integer_ratio f =
   if not (Float.is_finite f) then (Z.zero, Z.one) (* unreachable in tests *)
   else

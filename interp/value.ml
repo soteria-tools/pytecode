@@ -152,6 +152,9 @@ let collected_output st = String.concat "" (List.rev st.out)
 (* Small pure helpers                                                  *)
 (* ------------------------------------------------------------------ *)
 
+(* ref: 3.2 The standard type hierarchy — the type name CPython reports (as in
+   type(x).__name__ and error messages); the special forms (GenericAlias,
+   UnionType, ...) use their qualified module.name. *)
 let type_name st (v : value) =
   match v with
   | None_ -> "NoneType"
@@ -197,8 +200,9 @@ let type_name st (v : value) =
       | Type_alias _ -> "typing.TypeAliasType"
       | Typevar _ -> "typing.TypeVar")
 
-(* Python float repr: the shortest decimal digits that round-trip, laid out
-   in fixed notation unless the decimal exponent is < -4 or >= 16. *)
+(* ref: 3.2.4.2 Real / repr(float) — the shortest decimal string that round-trips
+   to the same float, laid out in fixed notation unless the decimal exponent is
+   < -4 or >= 16 (then scientific). *)
 let float_repr f =
   if Float.is_nan f then "nan"
   else if f = Float.infinity then "inf"
@@ -276,8 +280,9 @@ let complex_repr re im =
     let sign = if String.length im_s > 0 && im_s.[0] = '-' then "" else "+" in
     "(" ^ complex_part re ^ sign ^ im_s ^ "j)"
 
-(* Python str repr: single quotes, unless the string contains a single
-   quote and no double quote. *)
+(* ref: repr(str) / 2.4.1 String literals — a quoted, re-parseable form: single
+   quotes unless the string has a single quote but no double quote; control
+   characters are escaped (\n, \t, \xNN). *)
 let str_repr s =
   let has c = String.contains s c in
   let quote = if has '\'' && not (has '"') then '"' else '\'' in
@@ -295,9 +300,9 @@ let str_repr s =
   let qs = String.make 1 quote in
   qs ^ String.concat "" (List.map escape (List.of_seq (String.to_seq s))) ^ qs
 
-(* Python bytes repr: a b-prefixed quoted form; printable ASCII is shown
-   literally, \t \n \r are named, and every other byte (< 32, 127, or >= 128)
-   is shown as \xXX. Quote selection mirrors str_repr. *)
+(* ref: repr(bytes) / 2.4.1 (bytes literals) — a b-prefixed quoted form;
+   printable ASCII is shown literally, \t \n \r are named, and every other byte
+   (< 32, 127, or >= 128) is shown as \xXX. Quote selection mirrors str_repr. *)
 let bytes_repr s =
   let has c = String.contains s c in
   let quote = if has '\'' && not (has '"') then '"' else '\'' in
@@ -390,6 +395,8 @@ let utf8_chars s =
 (* Integer helpers (Python floor-division semantics)                   *)
 (* ------------------------------------------------------------------ *)
 
+(* ref: 6.7 Binary arithmetic operations — // floors toward negative infinity
+   and % takes the sign of the divisor (so a == (a // b) * b + a % b). *)
 let z_floordiv a b = Z.fdiv a b
 let z_mod a b = Z.sub a (Z.mul (Z.fdiv a b) b)
 

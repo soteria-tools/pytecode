@@ -306,10 +306,10 @@ let builtin_class_addr st name =
   | Some (Ref a) -> a
   | _ -> invalid_arg ("boot class missing: " ^ name)
 
-(* Python slice arithmetic: the indices selected by [start:stop:step] on a
-   sequence of length [len], as a list. *)
-(* normalize a slice over [len] to (start, stop, step) ints — CPython's
-   slice.indices(len) algorithm *)
+(* ref: 6.3.3 Slicings / slice.indices(len) — clamp a [start:stop:step] slice to
+   a sequence of length [len]: [slice_bounds] gives the normalised (start, stop,
+   step), [slice_indices] the concrete list of selected indices (negative
+   indices count from the end; out-of-range bounds are clamped). *)
 let slice_bounds ~len start stop step =
   let z = Z.to_int in
   let step = match step with None -> 1 | Some s -> z s in
