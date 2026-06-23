@@ -1,5 +1,9 @@
 (* str methods, format() spec rendering, printf-style %, and str.format.
 
+   ref: 3.2.5 Sequences (str is an immutable sequence of code points); the
+   methods themselves are the Library Reference "Text Sequence Type — str". The
+   case/predicate methods here operate on ASCII only (CPython is full Unicode).
+
    Back-edges into the core protocol go through [Effects]; pure string
    work is in [Strutil]. *)
 
@@ -10,6 +14,7 @@ open Effects
 
 let build_bytes = Py_bytes.build_bytes
 
+(* ref: Library Reference "Text Sequence Type — str" — dispatch a str method. *)
 let rec str_method st meth args : value r =
   let no_such () = raise_py st "RuntimeError" ("unknown str method " ^ meth) in
   match (meth, args) with
@@ -31,6 +36,9 @@ let rec str_method st meth args : value r =
   | "strip", [ Str s ] -> Ok (Str (string_trim ~left:true ~right:true s), st)
   | "lstrip", [ Str s ] -> Ok (Str (string_trim ~left:true ~right:false s), st)
   | "rstrip", [ Str s ] -> Ok (Str (string_trim ~left:false ~right:true s), st)
+  (* ref: str.split — with no separator (or None) split on runs of whitespace
+     and drop empty fields; an explicit separator splits on each occurrence
+     (keeping empties). str.rsplit/splitlines are nearby in stdtypes. *)
   | "split", [ Str s ] ->
       let l, st =
         alloc st (List (List.map (fun x -> Str x) (split_whitespace s)))
@@ -90,6 +98,9 @@ let rec str_method st meth args : value r =
   | "endswith", [ Str s; Str p ] ->
       let ls = String.length s and lp = String.length p in
       Ok (Bool (lp <= ls && String.sub s (ls - lp) lp = p), st)
+  (* ref: str.find/str.index — both return the (code-point) offset of the first
+     occurrence, but find returns -1 when absent whereas index raises
+     ValueError; rfind/rindex search from the right. *)
   | "find", [ Str s; Str sub ] -> (
       match find_substring s sub with
       | Some b -> Ok (Int (Z.of_int (utf8_length (String.sub s 0 b))), st)

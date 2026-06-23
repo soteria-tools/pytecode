@@ -1,4 +1,10 @@
-(* tuple methods. Back-edges go through [Effects]. *)
+(* tuple methods.
+
+   ref: 3.2.5.1 Immutable sequences (the type hierarchy); count/index are the
+   "Common Sequence Operations" in the Library Reference (index raises
+   ValueError when the value is absent).
+
+   Back-edges go through [Effects]. *)
 
 open Value
 open Errors

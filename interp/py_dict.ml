@@ -1,4 +1,11 @@
-(* dict methods. Back-edges go through [Effects]. *)
+(* dict methods.
+
+   ref: 3.2.7 Mappings / 3.2.7.1 Dictionaries (the type hierarchy); the methods
+   are the Library Reference "Mapping Types — dict". Note: get()/pop() take an
+   optional default (pop() without one is KeyError); setdefault() inserts the
+   default if absent; popitem() removes the last-inserted pair (LIFO).
+
+   Back-edges go through [Effects]. *)
 
 open Value
 open Errors

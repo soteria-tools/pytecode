@@ -1,4 +1,12 @@
-(* set methods. Back-edges go through [Effects]. *)
+(* set methods.
+
+   ref: 3.2.6 Set types (the type hierarchy); the methods are the Library
+   Reference "Set Types — set, frozenset". Note: the named algebra methods
+   (union/intersection/difference/...) accept any iterable, whereas the operator
+   forms (|, &, -, ^) require a set; remove() is KeyError on a missing element
+   while discard() is not; pop() removes an arbitrary element.
+
+   Back-edges go through [Effects]. *)
 
 open Value
 open Boot

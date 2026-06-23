@@ -1,4 +1,11 @@
-(* list methods. Back-edges go through [Effects]. *)
+(* list methods.
+
+   ref: 3.2.5.2 Mutable sequences (the type hierarchy); the methods are the
+   Library Reference "Mutable Sequence Types" / "Lists". Note: pop() defaults to
+   the last item and is IndexError on empty; remove()/index() raise ValueError
+   when the value is absent; sort() is stable.
+
+   Back-edges go through [Effects]. *)
 
 open Value
 open Boot

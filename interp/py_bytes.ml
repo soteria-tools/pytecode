@@ -1,4 +1,9 @@
 (* bytes / bytearray methods and the bytes()/bytearray() payload builder.
+
+   ref: 3.2.5.1 Bytes / 3.2.5.2 Bytearray (the type hierarchy); the methods are
+   the Library Reference "Binary Sequence Types — bytes, bytearray" and mirror
+   str's byte-oriented methods (ASCII only here).
+
    Back-edges go through [Effects]; pure byte work is in [Strutil]. *)
 
 open Value

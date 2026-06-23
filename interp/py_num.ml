@@ -1,4 +1,10 @@
 (* int / float / complex methods and int() string parsing.
+
+   ref: 3.2.4 Numbers (the numeric tower: 3.2.4.1 Integral, 3.2.4.2 Real,
+   3.2.4.3 Complex); the methods are the Library Reference "Numeric Types — int,
+   float, complex" (int.to_bytes/bit_length/..., float.is_integer/
+   as_integer_ratio, complex.conjugate).
+
    Back-edges go through [Effects]; pure rounding etc. is in [Numutil]. *)
 
 open Value
