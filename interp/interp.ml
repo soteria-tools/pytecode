@@ -3,9 +3,32 @@
    Optimized for readability and simplicity, not speed. The whole
    interpreter state is the immutable [Value.state] record, threaded
    explicitly; raised Python exceptions travel in the [Error] case of
-   ['a Value.r]. There is no mutable state anywhere. *)
+   ['a Value.r]. There is no mutable state anywhere.
+
+   Module layout. The interpreter is one large mutually-recursive group (a
+   single strongly-connected component: almost everything can reach [call] /
+   [getattr_value] / [py_repr], and [call] reaches everything), so OCaml cannot
+   split its [let rec] across files. The pieces that do NOT recurse into user
+   code are factored into plain modules [open]ed here:
+
+     - [Value]   core types, the heap, the error monad, and pure helpers
+                 ([map_m]/[fold_m]/[take]/[drop], [addr]/[cls_of]/[dict_pairs],
+                 the numeric coercions, [is_instance_value], [native_of], ...);
+     - [Boot]    builtin classes, the builtins namespace, method-name tables;
+     - [Errors]  exception construction ([raise_py]/[raise_key]/...);
+     - [Strutil] / [Numutil]  pure string / numeric helpers.
+
+   The per-type method dispatchers that DO recurse ([Py_str], [Py_bytes],
+   [Py_list], [Py_dict], [Py_set], [Py_tuple], [Py_num]) live in their own files
+   and reach back into this knot through effects (see [Effects]):
+   [handle] (below) is the single handler that dispatches each back-edge effect
+   to the matching core function here. *)
 
 open Value
+open Boot
+open Errors
+open Strutil
+open Numutil
 module Phir = Pytecode.Phir
 module Ast = Pytecode.Ast
 
@@ -14,7 +37,6 @@ type frame_outcome = Returned of value | Yielded of value * frame
 (* What executing one instruction does to the frame. *)
 type istep = Next of frame | Goto of frame * int | Fin of frame_outcome
 
-let addr = function Ref a -> a | _ -> invalid_arg "addr"
 let push f v = { f with stack = v :: f.stack }
 
 let pop f =
@@ -24,536 +46,13 @@ let pop f =
 
 let advance f = { f with idx = f.idx + 1 }
 
-let rec map_m st f = function
-  | [] -> Ok ([], st)
-  | x :: xs ->
-      let* y, st = f st x in
-      let* ys, st = map_m st f xs in
-      Ok (y :: ys, st)
-
-let rec fold_m st f acc = function
-  | [] -> Ok (acc, st)
-  | x :: xs ->
-      let* acc, st = f st acc x in
-      fold_m st f acc xs
-
-let rec take n = function
-  | xs when n = 0 -> ([], xs)
-  | x :: xs ->
-      let a, b = take (n - 1) xs in
-      (x :: a, b)
-  | [] -> invalid_arg "take"
-
-(* ------------------------------------------------------------------ *)
-(* Boot: builtin classes and the builtins namespace                    *)
-(* ------------------------------------------------------------------ *)
-
-(* (name, parent); parents must appear first. *)
-(* ref: Built-in Exceptions — the standard exception hierarchy (3.13).
-   ExceptionGroup/BaseExceptionGroup are created separately (multiple bases). *)
-let exception_tree =
-  [
-    ("BaseException", None);
-    ("GeneratorExit", Some "BaseException");
-    ("KeyboardInterrupt", Some "BaseException");
-    ("SystemExit", Some "BaseException");
-    ("Exception", Some "BaseException");
-    ("ArithmeticError", Some "Exception");
-    ("FloatingPointError", Some "ArithmeticError");
-    ("OverflowError", Some "ArithmeticError");
-    ("ZeroDivisionError", Some "ArithmeticError");
-    ("AssertionError", Some "Exception");
-    ("AttributeError", Some "Exception");
-    ("BufferError", Some "Exception");
-    ("EOFError", Some "Exception");
-    ("ImportError", Some "Exception");
-    ("ModuleNotFoundError", Some "ImportError");
-    ("LookupError", Some "Exception");
-    ("IndexError", Some "LookupError");
-    ("KeyError", Some "LookupError");
-    ("MemoryError", Some "Exception");
-    ("NameError", Some "Exception");
-    ("UnboundLocalError", Some "NameError");
-    ("OSError", Some "Exception");
-    ("BlockingIOError", Some "OSError");
-    ("ChildProcessError", Some "OSError");
-    ("ConnectionError", Some "OSError");
-    ("BrokenPipeError", Some "ConnectionError");
-    ("ConnectionAbortedError", Some "ConnectionError");
-    ("ConnectionRefusedError", Some "ConnectionError");
-    ("ConnectionResetError", Some "ConnectionError");
-    ("FileExistsError", Some "OSError");
-    ("FileNotFoundError", Some "OSError");
-    ("InterruptedError", Some "OSError");
-    ("IsADirectoryError", Some "OSError");
-    ("NotADirectoryError", Some "OSError");
-    ("PermissionError", Some "OSError");
-    ("ProcessLookupError", Some "OSError");
-    ("TimeoutError", Some "OSError");
-    ("ReferenceError", Some "Exception");
-    ("RuntimeError", Some "Exception");
-    ("NotImplementedError", Some "RuntimeError");
-    ("RecursionError", Some "RuntimeError");
-    ("StopAsyncIteration", Some "Exception");
-    ("StopIteration", Some "Exception");
-    ("SyntaxError", Some "Exception");
-    ("IndentationError", Some "SyntaxError");
-    ("TabError", Some "IndentationError");
-    ("SystemError", Some "Exception");
-    ("TypeError", Some "Exception");
-    ("ValueError", Some "Exception");
-    ("UnicodeError", Some "ValueError");
-    ("UnicodeDecodeError", Some "UnicodeError");
-    ("UnicodeEncodeError", Some "UnicodeError");
-    ("UnicodeTranslateError", Some "UnicodeError");
-    ("Warning", Some "Exception");
-    ("BytesWarning", Some "Warning");
-    ("DeprecationWarning", Some "Warning");
-    ("EncodingWarning", Some "Warning");
-    ("FutureWarning", Some "Warning");
-    ("ImportWarning", Some "Warning");
-    ("PendingDeprecationWarning", Some "Warning");
-    ("ResourceWarning", Some "Warning");
-    ("RuntimeWarning", Some "Warning");
-    ("SyntaxWarning", Some "Warning");
-    ("UnicodeWarning", Some "Warning");
-    ("UserWarning", Some "Warning");
-  ]
-
-let builtin_functions =
-  [
-    "print";
-    "len";
-    "repr";
-    "ascii";
-    "hash";
-    "abs";
-    "min";
-    "max";
-    "sum";
-    "sorted";
-    "any";
-    "all";
-    "divmod";
-    "pow";
-    "round";
-    "hex";
-    "bin";
-    "oct";
-    "chr";
-    "ord";
-    "callable";
-    "getattr";
-    "setattr";
-    "hasattr";
-    "dir";
-    "reversed";
-    "delattr";
-    "isinstance";
-    "issubclass";
-    "iter";
-    "next";
-    "enumerate";
-    "zip";
-    "map";
-    "filter";
-    "vars";
-    "format";
-    "__build_class__";
-    "super";
-  ]
-
-let builtin_types =
-  (* (name, base, tag) — base must appear first; object's base is itself. *)
-  [
-    ("object", "object", "object");
-    ("type", "object", "type");
-    ("int", "object", "int");
-    ("bool", "int", "bool");
-    ("float", "object", "float");
-    ("complex", "object", "complex");
-    (* ref: 3.2.4.3 Complex *)
-    ("str", "object", "str");
-    ("bytes", "object", "bytes");
-    (* ref: 3.2.5.1 Bytes *)
-    ("bytearray", "object", "bytearray");
-    (* ref: 3.2.5.2 Bytearray *)
-    ("list", "object", "list");
-    ("dict", "object", "dict");
-    ("tuple", "object", "tuple");
-    ("set", "object", "set");
-    ("frozenset", "object", "frozenset");
-    (* ref: 3.2.6 Set types *)
-    ("range", "object", "range");
-    ("slice", "object", "slice");
-    (* ref: 3.2.13 Internal types — slice objects *)
-    ("property", "object", "property");
-    ("classmethod", "object", "classmethod");
-    ("staticmethod", "object", "staticmethod");
-    (* ref: 3.2.1 None / 3.2.2 NotImplemented / 3.2.3 Ellipsis — the singleton
-       types, so type(None)/type(...)/type(NotImplemented) resolve *)
-    ("NoneType", "object", "NoneType");
-    ("ellipsis", "object", "ellipsis");
-    ("NotImplementedType", "object", "NotImplementedType");
-    (* ref: 3.3.5 generic aliases / 6.7 union types / 7.14 type aliases — the
-       types whose __name__ these objects report (type(list[int]).__name__ ==
-       "GenericAlias", etc.) *)
-    ("GenericAlias", "object", "GenericAlias");
-    ("UnionType", "object", "UnionType");
-    ("TypeAliasType", "object", "TypeAliasType");
-    ("TypeVar", "object", "TypeVar");
-  ]
-
-let new_class st ?builtin ?mro_tail ~bases ~dict_pairs cname =
-  let dict_ref, st = alloc st (Dict dict_pairs) in
-  let mro_tail =
-    match mro_tail with
-    | Some m -> m
-    | None -> (
-        match bases with
-        | [] -> []
-        | b :: _ -> ( match heap_get st b with Class c -> c.mro | _ -> []))
-  in
-  let caddr = st.next in
-  let _, st =
-    alloc st
-      (Class
-         {
-           cname;
-           bases;
-           mro = caddr :: mro_tail;
-           cdict = addr dict_ref;
-           builtin;
-           meta = None;
-         })
-  in
-  (caddr, st)
-
-let boot () : state =
-  let st =
-    { heap = Int_map.empty; next = 0; out = []; cur_exc = None_; builtins = 0 }
-  in
-  (* Builtin types. [object]'s mro is just itself. *)
-  let types, st =
-    List.fold_left
-      (fun (acc, st) (name, base, tag) ->
-        let bases = if name = "object" then [] else [ List.assoc base acc ] in
-        let dict_pairs =
-          if name = "object" then
-            (* ref: 3.3.1 (__init__/__new__) and 3.3.2 Customizing attribute
-               access (__getattribute__/__setattr__/__delattr__) — object's
-               defaults, which user overrides delegate back to *)
-            [
-              (Str "__init__", Builtin "object.__init__");
-              (Str "__new__", Builtin "object.__new__");
-              (Str "__getattribute__", Builtin "object.__getattribute__");
-              (Str "__setattr__", Builtin "object.__setattr__");
-              (Str "__delattr__", Builtin "object.__delattr__");
-              (Str "__init_subclass__", Builtin "object.__init_subclass__");
-            ]
-          else if name = "type" then
-            (* ref: 3.3.3 — the default metaclass [type] supplies the class
-               builder (__new__), a no-op __init__, and __call__ (which
-               instantiates the class). User metaclasses inherit these and
-               reach them through super(). *)
-            [
-              (Str "__new__", Builtin "type.__new__");
-              (Str "__init__", Builtin "type.__init__");
-              (Str "__call__", Builtin "type.__call__");
-            ]
-          else if name = "list" || name = "dict" || name = "set" then
-            (* ref: 3.2 — a mutable container's __init__ (re)fills the payload;
-               subclasses reach it via super().__init__(iterable) *)
-            [ (Str "__init__", Builtin (name ^ ".__init__")) ]
-          else []
-        in
-        let caddr, st = new_class st ~builtin:tag ~bases ~dict_pairs name in
-        ((name, caddr) :: acc, st))
-      ([], st) builtin_types
-  in
-  let object_addr = List.assoc "object" types in
-  (* Exception classes. *)
-  let excs, st =
-    List.fold_left
-      (fun (acc, st) (name, parent) ->
-        let bases =
-          match parent with
-          | None -> [ object_addr ]
-          | Some p -> [ List.assoc p acc ]
-        in
-        let dict_pairs =
-          if name = "BaseException" then
-            [
-              (Str "__init__", Builtin "BaseException.__init__");
-              (Str "__str__", Builtin "BaseException.__str__");
-              (Str "add_note", Builtin "BaseException.add_note");
-              (Str "with_traceback", Builtin "BaseException.with_traceback");
-            ]
-          else if name = "KeyError" then
-            [ (Str "__str__", Builtin "KeyError.__str__") ]
-          else []
-        in
-        let caddr, st = new_class st ~bases ~dict_pairs name in
-        ((name, caddr) :: acc, st))
-      ([], st) exception_tree
-  in
-  (* ref: 8.4 — exception groups. BaseExceptionGroup derives from
-     BaseException; ExceptionGroup additionally derives from Exception (so it is
-     caught by `except Exception`). The MRO is supplied explicitly because
-     new_class does not C3-merge multiple bases. *)
-  let excs, st =
-    let base_exc = List.assoc "BaseException" excs in
-    let exc = List.assoc "Exception" excs in
-    let group_dict =
-      [
-        (Str "__init__", Builtin "BaseExceptionGroup.__init__");
-        (Str "__str__", Builtin "BaseExceptionGroup.__str__");
-        (Str "split", Builtin "BaseExceptionGroup.split");
-        (Str "subgroup", Builtin "BaseExceptionGroup.subgroup");
-        (Str "derive", Builtin "BaseExceptionGroup.derive");
-      ]
-    in
-    let beg, st =
-      new_class st ~bases:[ base_exc ] ~dict_pairs:group_dict
-        "BaseExceptionGroup"
-    in
-    let eg, st =
-      new_class st ~bases:[ beg; exc ]
-        ~mro_tail:[ beg; exc; base_exc; object_addr ]
-        ~dict_pairs:group_dict "ExceptionGroup"
-    in
-    ( (* registered before the rest so `excs` lookups still resolve *)
-      ("ExceptionGroup", eg) :: ("BaseExceptionGroup", beg) :: excs,
-      st )
-  in
-  let entries =
-    List.map (fun (n, a) -> (Str n, Ref a)) (types @ excs)
-    @ List.map (fun n -> (Str n, Builtin n)) builtin_functions
-      (* ref: 3.2.2 NotImplemented / 3.2.3 Ellipsis — the built-in names *)
-    @ [ (Str "NotImplemented", Not_implemented); (Str "Ellipsis", Ellipsis) ]
-  in
-  let builtins_ref, st = alloc st (Dict entries) in
-  { st with builtins = addr builtins_ref }
-
-(* Pure lookup in the builtins namespace (keys are all Str). *)
-let lookup_builtin st name =
-  match heap_get st st.builtins with
-  | Dict pairs ->
-      List.find_map
-        (function Str k, v when k = name -> Some v | _ -> None)
-        pairs
-  | _ -> None
-
-let builtin_class_addr st name =
-  match lookup_builtin st name with
-  | Some (Ref a) -> a
-  | _ -> invalid_arg ("boot class missing: " ^ name)
-
-(* Python slice arithmetic: the indices selected by [start:stop:step] on a
-   sequence of length [len], as a list. *)
-(* normalize a slice over [len] to (start, stop, step) ints — CPython's
-   slice.indices(len) algorithm *)
-let slice_bounds ~len start stop step =
-  let z = Z.to_int in
-  let step = match step with None -> 1 | Some s -> z s in
-  let clamp lo hi v = if v < lo then lo else if v > hi then hi else v in
-  let norm dflt_fwd dflt_bwd = function
-    | None -> if step > 0 then dflt_fwd else dflt_bwd
-    | Some i ->
-        let i = z i in
-        let i = if i < 0 then i + len else i in
-        if step > 0 then clamp 0 len i else clamp (-1) (len - 1) i
-  in
-  (norm 0 (len - 1) start, norm len (-1) stop, step)
-
-let slice_indices ~len start stop step =
-  let z = Z.to_int in
-  let step = match step with None -> 1 | Some s -> z s in
-  let clamp lo hi v = if v < lo then lo else if v > hi then hi else v in
-  let norm dflt_fwd dflt_bwd = function
-    | None -> if step > 0 then dflt_fwd else dflt_bwd
-    | Some i ->
-        let i = z i in
-        let i = if i < 0 then i + len else i in
-        if step > 0 then clamp 0 len i else clamp (-1) (len - 1) i
-  in
-  let start = norm 0 (len - 1) start in
-  let stop = norm len (-1) stop in
-  let rec go i acc =
-    if (step > 0 && i >= stop) || (step < 0 && i <= stop) then List.rev acc
-    else go (i + step) (i :: acc)
-  in
-  go start []
-
-let list_set_nth xs i v = List.mapi (fun j x -> if j = i then v else x) xs
-let list_del_nth xs i = List.filteri (fun j _ -> j <> i) xs
-
-(* ref: 3.3.1 __hash__ — CPython reduces integer (and integral float) hashes
-   modulo 2**61-1, keeping the sign, with the special case hash(-1) == -2. *)
-let hash_modulus = Z.sub (Z.shift_left Z.one 61) Z.one
-
-let int_hash z =
-  let h = Z.rem z hash_modulus in
-  if Z.equal h Z.minus_one then Z.of_int (-2) else h
-
-(* Methods of builtin types, dispatched as [Builtin "str.upper"] etc. *)
-let str_methods =
-  [
-    "upper";
-    "lower";
-    "strip";
-    "lstrip";
-    "rstrip";
-    "split";
-    "join";
-    "replace";
-    "startswith";
-    "endswith";
-    "find";
-    "index";
-    "isdigit";
-    "isalpha";
-    "isupper";
-    "islower";
-    "title";
-    "center";
-    "zfill";
-    "ljust";
-    "rjust";
-    "partition";
-    "rpartition";
-    "count";
-    "splitlines";
-    "capitalize";
-    "swapcase";
-    "format";
-    "removeprefix";
-    "removesuffix";
-    "rfind";
-    "rindex";
-    "istitle";
-    "isspace";
-    "isalnum";
-    "isnumeric";
-    "isdecimal";
-    "isidentifier";
-    "translate";
-    "casefold";
-    "expandtabs";
-    "encode";
-  ]
-
-let list_methods =
-  [
-    "append";
-    "extend";
-    "insert";
-    "pop";
-    "remove";
-    "index";
-    "count";
-    "reverse";
-    "sort";
-    "copy";
-    "clear";
-  ]
-
-let dict_methods =
-  [
-    "get";
-    "keys";
-    "values";
-    "items";
-    "pop";
-    "setdefault";
-    "update";
-    "copy";
-    "clear";
-    "popitem";
-  ]
-
-let set_methods =
-  [
-    "add";
-    "discard";
-    "remove";
-    "union";
-    "copy";
-    "intersection";
-    "difference";
-    "symmetric_difference";
-    "issubset";
-    "issuperset";
-    "isdisjoint";
-    "clear";
-    "pop";
-    "update";
-  ]
-
-let tuple_methods = [ "count"; "index" ]
-
-let int_methods =
-  [
-    "bit_length"; "bit_count"; "to_bytes"; "from_bytes"; "conjugate"; "__add__";
-  ]
-
-let float_methods = [ "is_integer"; "conjugate"; "as_integer_ratio" ]
-
-let bytes_methods =
-  [
-    "decode";
-    "upper";
-    "lower";
-    "split";
-    "replace";
-    "startswith";
-    "endswith";
-    "find";
-    "index";
-    "rfind";
-    "count";
-    "strip";
-    "lstrip";
-    "rstrip";
-    "hex";
-    "join";
-  ]
-
-let bytearray_methods = [ "decode"; "append"; "extend" ]
-let complex_methods = [ "conjugate" ]
-let gen_methods = [ "send"; "close"; "throw"; "__next__" ]
-
 (* ------------------------------------------------------------------ *)
 (* The interpreter proper: one big recursive knot                      *)
 (* ------------------------------------------------------------------ *)
 
-let rec make_exc st cls_addr (args : value list) : value * state =
-  let dict_ref, st = alloc st (Dict [ (Str "args", Tuple args) ]) in
-  alloc st (Instance { cls = cls_addr; dict = addr dict_ref; native = None_ })
-
-and raise_py : 'a. state -> string -> string -> 'a r =
- fun st clsname msg ->
-  let cls = builtin_class_addr st clsname in
-  let args = if msg = "" then [] else [ Str msg ] in
-  let exc, st = make_exc st cls args in
-  Error (exc, st)
-
-and unsupported : 'a. state -> string -> 'a r =
- fun st what -> raise_py st "RuntimeError" ("pytecode unsupported: " ^ what)
-
-(* KeyError carries the missing *key* (its [__str__] reprs it). *)
-and raise_key : 'a. state -> value -> 'a r =
- fun st key ->
-  let cls = builtin_class_addr st "KeyError" in
-  let exc, st = make_exc st cls [ key ] in
-  Error (exc, st)
-
 (* ---------- dictionaries (insertion-ordered association lists) ----- *)
 
-and dict_pairs st a =
-  match heap_get st a with Dict ps -> ps | _ -> invalid_arg "dict_pairs"
-
-and dict_find st pairs key : value option r =
+let rec dict_find st pairs key : value option r =
   match pairs with
   | [] -> Ok (None, st)
   | (k, v) :: rest ->
@@ -611,58 +110,6 @@ and dict_del st a key : bool r =
   | None -> Ok (false, st)
 
 and dget st a key = dict_find st (dict_pairs st a) key
-
-(* ---------- numbers ----------------------------------------------- *)
-
-and as_z = function
-  | Int z -> Some z
-  | Bool b -> Some (if b then Z.one else Z.zero)
-  | _ -> None
-
-and as_float = function
-  | Float f -> Some f
-  | Int z -> Some (Z.to_float z)
-  | Bool b -> Some (if b then 1. else 0.)
-  | _ -> None
-
-and is_number v = as_float v <> None
-and is_complex = function Complex _ -> true | _ -> false
-
-(* any numeric operand, including complex (real types embed as imag 0) *)
-and is_numeric v = is_number v || is_complex v
-
-and as_complex = function
-  | Complex (re, im) -> Some (re, im)
-  | v -> ( match as_float v with Some f -> Some (f, 0.) | None -> None)
-
-(* ref: 3.2.5 — the raw bytes of a bytes-like object (bytes or bytearray); used
-   for cross-type comparison, concatenation and membership. *)
-and as_bytes st v =
-  match v with
-  | Bytes s -> Some s
-  | Ref a -> ( match heap_get st a with Bytearray s -> Some s | _ -> None)
-  | _ -> None
-
-(* ref: 6.10.1 Value comparisons (numbers compared mathematically) and 3.2.4.2
-   Real — IEEE 754 semantics. Numeric equality and ordering; assume both are
-   numbers. Integers and bools compare exactly; floats follow IEEE 754 via
-   OCaml's comparison *operators* (NaN is unordered and unequal to everything,
-   0.0 = -0.0) — unlike [compare], which imposes a total order treating NaN as
-   equal to itself. *)
-and num_eq a b =
-  match (as_z a, as_z b) with
-  | Some x, Some y -> Z.equal x y
-  | _ -> Option.get (as_float a) = Option.get (as_float b)
-
-and num_lt a b =
-  match (as_z a, as_z b) with
-  | Some x, Some y -> Z.lt x y
-  | _ -> Option.get (as_float a) < Option.get (as_float b)
-
-and num_le a b =
-  match (as_z a, as_z b) with
-  | Some x, Some y -> Z.leq x y
-  | _ -> Option.get (as_float a) <= Option.get (as_float b)
 
 (* ---------- equality ----------------------------------------------- *)
 
@@ -745,15 +192,6 @@ and set_subset st xs ys =
         Ok (m, st))
     true xs
 
-(* Object identity, matching the `is` operator: heap objects by address, other
-   immediates structurally. *)
-and val_identical a b =
-  match (a, b) with
-  | Ref x, Ref y -> x = y
-  | Null, Null -> true
-  | Ref _, _ | _, Ref _ -> false
-  | x, y -> x = y
-
 and set_mem st elems x =
   (* ref: 6.10.2 Membership test operations — x in y is
      any(x is e or x == e for e in y); the identity check short-circuits so an
@@ -762,10 +200,6 @@ and set_mem st elems x =
     (fun st acc e ->
       if acc || val_identical e x then Ok (true, st) else py_eq st e x)
     false elems
-
-and is_instance_value st = function
-  | Ref a -> ( match heap_get st a with Instance _ -> true | _ -> false)
-  | _ -> false
 
 (* ref: 3.3.1 (rich comparison methods __lt__../__eq__..) and 3.2.2 NotImplemented.
    Call a rich-comparison dunder, treating both "not defined" and a
@@ -1421,9 +855,6 @@ and to_list st (v : value) : value list r =
 
 (* ---------- classes and attributes --------------------------------- *)
 
-and cls_of st a =
-  match heap_get st a with Class c -> c | _ -> invalid_arg "cls_of"
-
 (* ref: 3.3.2.5 __slots__ — names listed in a class's own __slots__ (a str names
    one slot; a tuple/list names several). *)
 and slot_names_of st = function
@@ -1648,19 +1079,6 @@ and class_getattr st cls_addr name : value r =
           | Some tag when List.mem name (builtin_method_names tag) ->
               Ok (Builtin (tag ^ "." ^ name), st)
           | _ -> attribute_error st (Ref cls_addr) name))
-
-and builtin_method_names = function
-  | "str" -> str_methods
-  | "list" -> list_methods
-  | "dict" -> dict_methods
-  | "set" -> set_methods
-  | "tuple" -> tuple_methods
-  | "int" | "bool" -> int_methods
-  | "float" -> float_methods
-  | "complex" -> complex_methods
-  | "bytes" -> bytes_methods
-  | "bytearray" -> bytearray_methods
-  | _ -> []
 
 (* General attribute access, dispatching on the value's kind. *)
 and getattr_value st (v : value) name : value r =
@@ -2191,12 +1609,6 @@ and is_native_tag = function
       true
   | _ -> false
 
-(* the underlying payload of a built-in-subclass instance, if any *)
-and native_of st v : value option =
-  match deref st v with
-  | Some (Instance { native; _ }) when native <> None_ -> Some native
-  | _ -> None
-
 and instantiate st cls_addr args kwargs : value r =
   match builtin_base_tag st cls_addr with
   | Some tag when is_native_tag tag -> (
@@ -2369,7 +1781,7 @@ and binary st (op : Phir.binop) ~inplace a b : value r =
   | Add, Str x, Str y -> Ok (Str (x ^ y), st)
   | Add, Str _, _ -> concat_type_error st "str" b
   (* ref: printf-style string formatting — str % args *)
-  | Mod, Str fmt, _ -> printf_format st fmt b
+  | Mod, Str fmt, _ -> Py_str.printf_format st fmt b
   | Mul, Str s, n when as_z n <> None ->
       Ok (Str (String.concat "" (repeat_seq [ s ] (Option.get (as_z n)))), st)
   | Mul, n, Str s when as_z n <> None ->
@@ -3207,310 +2619,6 @@ and del_unsupported : 'a. state -> value -> 'a r =
     (Printf.sprintf "'%s' object doesn't support item deletion"
        (type_name st obj))
 
-(* ---------- format specs (the subset the tests exercise) ------------ *)
-
-(* ref: printf-style string formatting (str % args). Each %-spec is translated
-   to the equivalent format() mini-language spec and rendered via format_value,
-   with the conversions r/a/c/i/u and mapping keys handled here. *)
-and printf_format st fmt arg : value r =
-  (* a tuple supplies positional args (and is checked for leftovers); any other
-     value is a single positional arg that %(key) specifiers also index into *)
-  let is_tuple = match arg with Tuple _ -> true | _ -> false in
-  let pos_args = match arg with Tuple xs -> xs | single -> [ single ] in
-  let n = String.length fmt in
-  let span pred i =
-    let rec go j = if j < n && pred fmt.[j] then go (j + 1) else j in
-    go i
-  in
-  (* translate printf (flags,width,prec,conv) to a format-spec string *)
-  let to_spec flags width prec conv =
-    let has c = String.contains flags c in
-    let numeric = String.contains "diuoxXeEfFgG" conv in
-    let conv =
-      match conv with 'i' | 'u' -> "d" | 'F' -> "f" | c -> String.make 1 c
-    in
-    let align = if has '-' then "<" else if numeric then "" else ">" in
-    let sign = if has '+' then "+" else if has ' ' then " " else "" in
-    let alt = if has '#' then "#" else "" in
-    let zero = if has '0' && (not (has '-')) && numeric then "0" else "" in
-    String.concat ""
-      [
-        align;
-        sign;
-        alt;
-        zero;
-        width;
-        (if prec = "" then "" else "." ^ prec);
-        conv;
-      ]
-  in
-  let rec scan st i args acc =
-    if i >= n then
-      if is_tuple && args <> [] then
-        raise_py st "TypeError"
-          "not all arguments converted during string formatting"
-      else Ok (String.concat "" (List.rev acc), st)
-    else if fmt.[i] <> '%' then
-      scan st (i + 1) args (String.make 1 fmt.[i] :: acc)
-    else begin
-      (* %[(key)][flags][width][.prec][len]conv *)
-      let key, j =
-        if i + 1 < n && fmt.[i + 1] = '(' then
-          let close = span (fun c -> c <> ')') (i + 2) in
-          (Some (String.sub fmt (i + 2) (close - i - 2)), close + 1)
-        else (None, i + 1)
-      in
-      let fl_end = span (fun c -> String.contains "-+ #0" c) j in
-      let flags = String.sub fmt j (fl_end - j) in
-      let w_end = span (fun c -> c >= '0' && c <= '9') fl_end in
-      let width = String.sub fmt fl_end (w_end - fl_end) in
-      let prec, p_end =
-        if w_end < n && fmt.[w_end] = '.' then
-          let pe = span (fun c -> c >= '0' && c <= '9') (w_end + 1) in
-          (String.sub fmt (w_end + 1) (pe - w_end - 1), pe)
-        else ("", w_end)
-      in
-      let p_end = span (fun c -> String.contains "hlL" c) p_end in
-      if p_end >= n then raise_py st "ValueError" "incomplete format"
-      else
-        let conv = fmt.[p_end] in
-        let next = p_end + 1 in
-        if conv = '%' then scan st next args ("%" :: acc)
-        else
-          let* (value, args'), st =
-            match key with
-            | Some k -> (
-                (* %(key) indexes the mapping without consuming positional args *)
-                match deref st arg with
-                | Some (Dict _) -> (
-                    let* v, st = dget st (addr arg) (Str k) in
-                    match v with
-                    | Some v -> Ok ((v, args), st)
-                    | None -> raise_key st (Str k))
-                | _ -> raise_py st "TypeError" "format requires a mapping")
-            | None -> (
-                match args with
-                | v :: rest -> Ok ((v, rest), st)
-                | [] ->
-                    raise_py st "TypeError"
-                      "not enough arguments for format string")
-          in
-          (* conversions needing pre-processing into a string value *)
-          let* value, conv, st =
-            match conv with
-            | 'r' ->
-                let* s, st = py_repr st value in
-                Ok (Str s, 's', st)
-            | 'a' ->
-                let* s, st = py_repr st value in
-                Ok (Str (ascii_escape s), 's', st)
-            | 's' ->
-                let* s, st = py_str st value in
-                Ok (Str s, 's', st)
-            | 'c' -> (
-                match value with
-                | Str s when utf8_length s = 1 -> Ok (Str s, 's', st)
-                | _ ->
-                    let* cp, st = as_int st value "%c" in
-                    Ok (Str (utf8_encode cp), 's', st))
-            | ('d' | 'i' | 'u')
-              when match value with Float _ -> true | _ -> false ->
-                (* %d truncates a float toward zero *)
-                let x = Option.get (as_float value) in
-                Ok (Int (Z.of_float x), conv, st)
-            | _ -> Ok (value, conv, st)
-          in
-          let* piece, st =
-            format_value st value (to_spec flags width prec conv)
-          in
-          scan st next args' (piece :: acc)
-    end
-  in
-  let* s, st = scan st 0 pos_args [] in
-  Ok (Str s, st)
-
-and format_value st v spec : string r =
-  if is_instance_value st v then
-    (* ref: 3.3.1 __format__ — format()/f-strings/str.format delegate here;
-       object's default delegates to __str__ for an empty spec and rejects a
-       non-empty one *)
-    let* m, st = find_dunder st v "__format__" in
-    match m with
-    | Some f -> (
-        let* r, st = call st f [ Str spec ] [] in
-        match r with
-        | Str s -> Ok (s, st)
-        | _ ->
-            raise_py st "TypeError"
-              (Printf.sprintf "__format__ must return a str, not %s"
-                 (type_name st r)))
-    | None -> (
-        (* ref: 3.2 — a built-in subclass formats via its payload *)
-        match native_of st v with
-        | Some p -> format_value st p spec
-        | None ->
-            if spec = "" then py_str st v
-            else
-              raise_py st "TypeError"
-                (Printf.sprintf
-                   "unsupported format string passed to %s.__format__"
-                   (type_name st v)))
-  else if spec = "" then py_str st v
-  else
-    let fill, align, rest =
-      let n = String.length spec in
-      if n >= 2 && String.contains "<>^=" spec.[1] then
-        (spec.[0], Some spec.[1], String.sub spec 2 (n - 2))
-      else if n >= 1 && String.contains "<>^=" spec.[0] then
-        (' ', Some spec.[0], String.sub spec 1 (n - 1))
-      else (' ', None, spec)
-    in
-    (* ref: format spec — [[fill]align][sign][#][0][width][grouping][.prec][type] *)
-    let sign, rest =
-      if rest <> "" && (rest.[0] = '+' || rest.[0] = '-' || rest.[0] = ' ') then
-        (rest.[0], String.sub rest 1 (String.length rest - 1))
-      else ('-', rest)
-    in
-    let alt, rest =
-      if rest <> "" && rest.[0] = '#' then
-        (true, String.sub rest 1 (String.length rest - 1))
-      else (false, rest)
-    in
-    let zero, rest =
-      if rest <> "" && rest.[0] = '0' then
-        (true, String.sub rest 1 (String.length rest - 1))
-      else (false, rest)
-    in
-    let digits s =
-      let rec go i =
-        if i < String.length s && s.[i] >= '0' && s.[i] <= '9' then go (i + 1)
-        else i
-      in
-      let n = go 0 in
-      ( (if n = 0 then None else Some (int_of_string (String.sub s 0 n))),
-        String.sub s n (String.length s - n) )
-    in
-    let width, rest = digits rest in
-    let grouping, rest =
-      if rest <> "" && (rest.[0] = ',' || rest.[0] = '_') then
-        (Some rest.[0], String.sub rest 1 (String.length rest - 1))
-      else (None, rest)
-    in
-    let precision, rest =
-      if rest <> "" && rest.[0] = '.' then
-        let p, r = digits (String.sub rest 1 (String.length rest - 1)) in
-        (p, r)
-      else (None, rest)
-    in
-    let conv = rest in
-    (* group an unsigned digit string from the right with [sep] every [size] *)
-    let group_digits sep size s =
-      let rec go acc s =
-        let n = String.length s in
-        if n <= size then s :: acc
-        else
-          go (String.sub s (n - size) size :: acc) (String.sub s 0 (n - size))
-      in
-      String.concat (String.make 1 sep) (go [] s)
-    in
-    (* apply grouping to a signed (possibly fractional) numeric string *)
-    let group_number size s =
-      match grouping with
-      | None -> s
-      | Some sep ->
-          let intpart, frac =
-            match String.index_opt s '.' with
-            | Some i -> (String.sub s 0 i, String.sub s i (String.length s - i))
-            | None -> (s, "")
-          in
-          group_digits sep size intpart ^ frac
-    in
-    (* the sign prefix for a numeric body, given whether the value is negative *)
-    let sign_prefix neg =
-      if neg then "-" else match sign with '+' -> "+" | ' ' -> " " | _ -> ""
-    in
-    (* build a numeric result: (sign+altprefix, grouped magnitude) *)
-    let* (prefix, mag, numeric), st =
-      match (v, conv) with
-      | _, ("" | "d" | "n") when as_z v <> None ->
-          let z = Option.get (as_z v) in
-          let s = Z.to_string (Z.abs z) in
-          Ok ((sign_prefix (Z.sign z < 0), group_number 3 s, true), st)
-      | _, ("x" | "X" | "o" | "b") when as_z v <> None ->
-          let z = Option.get (as_z v) in
-          let conv_fmt = "%" ^ conv in
-          let s = Z.format conv_fmt (Z.abs z) in
-          let altp =
-            if not alt then ""
-            else
-              match conv with
-              | "x" -> "0x"
-              | "X" -> "0X"
-              | "o" -> "0o"
-              | _ -> "0b"
-          in
-          let size = match conv with "" | "d" | "n" -> 3 | _ -> 4 in
-          Ok ((sign_prefix (Z.sign z < 0) ^ altp, group_number size s, true), st)
-      | _, "f" when is_number v ->
-          let x = Option.get (as_float v) in
-          let p = Option.value precision ~default:6 in
-          let s = Printf.sprintf "%.*f" p (Float.abs x) in
-          Ok ((sign_prefix (1. /. x < 0. || x < 0.), group_number 3 s, true), st)
-      | _, ("e" | "E") when is_number v ->
-          let x = Option.get (as_float v) in
-          let p = Option.value precision ~default:6 in
-          let s = Printf.sprintf "%.*e" p (Float.abs x) in
-          let s = if conv = "E" then String.uppercase_ascii s else s in
-          Ok ((sign_prefix (x < 0.), s, true), st)
-      | _, ("g" | "G") when is_number v ->
-          let x = Option.get (as_float v) in
-          let p = max 1 (Option.value precision ~default:6) in
-          let s = Printf.sprintf "%.*g" p (Float.abs x) in
-          let s = if conv = "G" then String.uppercase_ascii s else s in
-          Ok ((sign_prefix (x < 0.), s, true), st)
-      | _, "%" when is_number v ->
-          let x = Option.get (as_float v) in
-          let p = Option.value precision ~default:6 in
-          let s = Printf.sprintf "%.*f%%" p (Float.abs x *. 100.) in
-          Ok ((sign_prefix (x < 0.), s, true), st)
-      | _, ("" | "s") ->
-          let* s, st = py_str st v in
-          let s =
-            match precision with
-            | Some p when utf8_length s > p -> utf8_sub s ~pos:0 ~len:p
-            | _ -> s
-          in
-          Ok (("", s, is_number v), st)
-      | _ ->
-          raise_py st "ValueError"
-            (Printf.sprintf "unsupported format spec '%s'" spec)
-    in
-    let body = prefix ^ mag in
-    let result =
-      match width with
-      | None -> body
-      | Some w -> (
-          let len = utf8_length body in
-          if len >= w then body
-          else
-            let pad = w - len in
-            let fill = if zero && align = None && numeric then '0' else fill in
-            let align =
-              match align with
-              | Some a -> a
-              | None ->
-                  if zero && numeric then '=' else if numeric then '>' else '<'
-            in
-            let mk n = String.make n fill in
-            match align with
-            | '<' -> body ^ mk pad
-            | '>' -> mk pad ^ body
-            | '^' -> mk (pad / 2) ^ body ^ mk (pad - (pad / 2))
-            | '=' -> prefix ^ mk pad ^ mag
-            | _ -> body)
-    in
-    Ok (result, st)
-
 (* ---------- sorting (monadic merge sort: comparisons run user code) -- *)
 
 and sorted_values st items ~key ~reverse : value list r =
@@ -3926,9 +3034,6 @@ and find_handler (table : Ast.exn_entry array) idx : Ast.exn_entry option =
   Array.find_opt
     (fun (e : Ast.exn_entry) -> e.start_idx <= idx && idx < e.end_idx)
     table
-
-and drop n xs =
-  if n <= 0 then xs else match xs with [] -> [] | _ :: t -> drop (n - 1) t
 
 and run_frame st (f : frame) : frame_outcome r =
   match exec_instr st f f.code.instrs.(f.idx) with
@@ -4520,13 +3625,13 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       (* f"{x}" is format(x, "") — for an instance this calls __format__(""),
          which only coincides with str(x) for the object default. *)
       let* (v, f), st = op1 st f v in
-      let* s, st = format_value st v "" in
+      let* s, st = Py_str.format_value st v "" in
       Ok (Next (push f (Str s)), st)
   | Format_with_spec (v, spec) -> (
       let* (vals, f), st = eval_operands st f [ v; spec ] in
       match vals with
       | [ v; Str spec ] ->
-          let* s, st = format_value st v spec in
+          let* s, st = Py_str.format_value st v spec in
           Ok (Next (push f (Str s)), st)
       | _ -> assert false)
   | Convert_value (conv, v) ->
@@ -4794,234 +3899,6 @@ and class_of_value st (v : value) : value r =
   | Some (Typevar _) -> Ok (Ref (builtin_class_addr st "TypeVar"), st)
   | _ -> Ok (Ref (builtin_class_addr st (type_name st v)), st)
 
-(* ---------- string helpers ----------------------------------------- *)
-
-and is_space c =
-  c = ' ' || c = '\t' || c = '\n' || c = '\r' || c = '\x0b' || c = '\x0c'
-
-(* Byte index of the first occurrence of [needle] at or after [from]. *)
-and find_substring ?(from = 0) hay needle : int option =
-  let lh = String.length hay and ln = String.length needle in
-  let rec go i =
-    if i + ln > lh then None
-    else if String.sub hay i ln = needle then Some i
-    else go (i + 1)
-  in
-  go from
-
-and split_on_sep s sep =
-  let ls = String.length sep in
-  let rec go i acc =
-    match find_substring ~from:i s sep with
-    | None -> List.rev (String.sub s i (String.length s - i) :: acc)
-    | Some j -> go (j + ls) (String.sub s i (j - i) :: acc)
-  in
-  go 0 []
-
-(* split on [sep] at most [maxsplit] times from the left (maxsplit < 0 = all) *)
-and split_on_sep_max s sep maxsplit =
-  if maxsplit < 0 then split_on_sep s sep
-  else
-    let ls = String.length sep in
-    let rec go i n acc =
-      if n >= maxsplit then
-        List.rev (String.sub s i (String.length s - i) :: acc)
-      else
-        match find_substring ~from:i s sep with
-        | None -> List.rev (String.sub s i (String.length s - i) :: acc)
-        | Some j -> go (j + ls) (n + 1) (String.sub s i (j - i) :: acc)
-    in
-    go 0 0 []
-
-(* whitespace split, at most [maxsplit] times from the left *)
-and split_whitespace_max s maxsplit =
-  if maxsplit < 0 then split_whitespace s
-  else
-    let n = String.length s in
-    let rec skip i = if i < n && is_space s.[i] then skip (i + 1) else i in
-    let rec word i =
-      if i < n && not (is_space s.[i]) then word (i + 1) else i
-    in
-    let rec go i cnt acc =
-      let i = skip i in
-      if i >= n then List.rev acc
-      else if cnt >= maxsplit then List.rev (String.sub s i (n - i) :: acc)
-      else
-        let e = word i in
-        go e (cnt + 1) (String.sub s i (e - i) :: acc)
-    in
-    go 0 0 []
-
-(* byte offset of the last occurrence of [sub] in [s] *)
-and rfind_substring s sub =
-  if sub = "" then Some (String.length s)
-  else
-    let rec go i last =
-      match find_substring ~from:i s sub with
-      | Some j -> go (j + 1) (Some j)
-      | None -> last
-    in
-    go 0 None
-
-(* str.istitle: at least one cased char, each word's first cased char upper and
-   the rest lower (ASCII) *)
-and is_titlecased s =
-  let upper c = c >= 'A' && c <= 'Z' in
-  let lower c = c >= 'a' && c <= 'z' in
-  let rec go i prev_cased any_cased ok =
-    if i >= String.length s then ok && any_cased
-    else
-      let c = s.[i] in
-      if upper c then
-        if prev_cased then go (i + 1) true any_cased false
-        else go (i + 1) true true ok
-      else if lower c then
-        if prev_cased then go (i + 1) true true ok
-        else go (i + 1) true true false
-      else go (i + 1) false any_cased ok
-  in
-  go 0 false false true
-
-(* str.expandtabs: replace tabs by spaces to the next multiple of [w] *)
-and expand_tabs s w =
-  let rec go i col acc =
-    if i >= String.length s then String.concat "" (List.rev acc)
-    else
-      match s.[i] with
-      | '\t' ->
-          let pad = if w <= 0 then 0 else w - (col mod w) in
-          go (i + 1) (col + pad) (String.make pad ' ' :: acc)
-      | ('\n' | '\r') as c -> go (i + 1) 0 (String.make 1 c :: acc)
-      | c -> go (i + 1) (col + 1) (String.make 1 c :: acc)
-  in
-  go 0 0 []
-
-(* str.translate: map each codepoint through a table (dict of int->str|int|None) *)
-and str_translate st s table =
-  let pairs = match deref st table with Some (Dict ps) -> ps | _ -> [] in
-  let lookup cp =
-    List.find_map
-      (fun (k, v) ->
-        match k with Int z when Z.to_int z = cp -> Some v | _ -> None)
-      pairs
-  in
-  let rec go i acc st =
-    if i >= String.length s then Ok (String.concat "" (List.rev acc), st)
-    else
-      let cp, n = utf8_decode_at s i in
-      let piece, st =
-        match lookup cp with
-        | Some (Str r) -> (r, st)
-        | Some (Int z) -> (utf8_encode (Z.to_int z), st)
-        | Some None_ -> ("", st)
-        | _ -> (String.sub s i n, st)
-      in
-      go (i + n) (piece :: acc) st
-  in
-  go 0 [] st
-
-and split_whitespace s =
-  let n = String.length s in
-  let rec go i acc cur =
-    if i >= n then List.rev (if cur = "" then acc else cur :: acc)
-    else if is_space s.[i] then
-      go (i + 1) (if cur = "" then acc else cur :: acc) ""
-    else go (i + 1) acc (cur ^ String.make 1 s.[i])
-  in
-  go 0 [] ""
-
-and string_trim ~left ~right s =
-  let n = String.length s in
-  let rec lo i = if i < n && left && is_space s.[i] then lo (i + 1) else i in
-  let rec hi i =
-    if i > 0 && right && is_space s.[i - 1] then hi (i - 1) else i
-  in
-  let a = lo 0 in
-  let b = hi n in
-  if b <= a then "" else String.sub s a (b - a)
-
-and count_nonoverlap s sub =
-  if sub = "" then utf8_length s + 1
-  else
-    let rec go i acc =
-      match find_substring ~from:i s sub with
-      | None -> acc
-      | Some j -> go (j + String.length sub) (acc + 1)
-    in
-    go 0 0
-
-and replace_substring s old_s new_s limit =
-  if old_s = "" then s
-  else
-    let rec go i n =
-      if n = 0 then String.sub s i (String.length s - i)
-      else
-        match find_substring ~from:i s old_s with
-        | None -> String.sub s i (String.length s - i)
-        | Some j ->
-            String.sub s i (j - i) ^ new_s ^ go (j + String.length old_s) (n - 1)
-    in
-    go 0 limit
-
-and title_case s =
-  let chars = List.of_seq (String.to_seq s) in
-  let is_alpha c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') in
-  let _, out =
-    List.fold_left
-      (fun (prev_alpha, acc) c ->
-        let c' =
-          if is_alpha c then
-            if prev_alpha then Char.lowercase_ascii c
-            else Char.uppercase_ascii c
-          else c
-        in
-        (is_alpha c, acc ^ String.make 1 c'))
-      (false, "") chars
-  in
-  out
-
-(* "{}-{}", "{1}{0}" style templates (str.format). *)
-and str_format st template args : string r =
-  let n = String.length template in
-  let rec go st i auto acc =
-    if i >= n then Ok (acc, st)
-    else
-      match template.[i] with
-      | '{' when i + 1 < n && template.[i + 1] = '{' ->
-          go st (i + 2) auto (acc ^ "{")
-      | '}' when i + 1 < n && template.[i + 1] = '}' ->
-          go st (i + 2) auto (acc ^ "}")
-      | '{' -> (
-          match String.index_from_opt template i '}' with
-          | None -> raise_py st "ValueError" "unmatched '{' in format string"
-          | Some j ->
-              let field = String.sub template (i + 1) (j - i - 1) in
-              let idx, auto =
-                if field = "" then (auto, auto + 1)
-                else (int_of_string field, auto)
-              in
-              if idx >= List.length args then
-                raise_py st "IndexError" "format index out of range"
-              else
-                (* "{}" is format(arg, "") — delegate to __format__ for instances *)
-                let* s, st = format_value st (List.nth args idx) "" in
-                go st (j + 1) auto (acc ^ s))
-      | c -> go st (i + 1) auto (acc ^ String.make 1 c)
-  in
-  go st 0 0 ""
-
-(* ---------- builtin call dispatch ----------------------------------- *)
-
-and as_str st v what : string r =
-  match v with
-  | Str s -> Ok (s, st)
-  | _ -> raise_py st "TypeError" (what ^ " expects a string")
-
-and as_int st v what : int r =
-  match as_z v with
-  | Some z -> Ok (Z.to_int z, st)
-  | None -> raise_py st "TypeError" (what ^ " expects an integer")
-
 (* ref: 3.3.8 __index__ — losslessly interpret a value as an integer (used by
    hex/bin/oct and the like); a non-int instance is converted via __index__. *)
 and to_index st v : Z.t r =
@@ -5042,80 +3919,6 @@ and to_index st v : Z.t r =
           raise_py st "TypeError"
             (Printf.sprintf "'%s' object cannot be interpreted as an integer"
                (type_name st v)))
-
-(* escape non-ASCII codepoints in a (UTF-8) repr string, as ascii() does *)
-and ascii_escape s =
-  let rec go i acc =
-    if i >= String.length s then List.rev acc
-    else
-      let cp, n = utf8_decode_at s i in
-      let piece =
-        if cp < 0x80 then String.sub s i n
-        else if cp <= 0xff then Printf.sprintf "\\x%02x" cp
-        else if cp <= 0xffff then Printf.sprintf "\\u%04x" cp
-        else Printf.sprintf "\\U%08x" cp
-      in
-      go (i + n) (piece :: acc)
-  in
-  String.concat "" (go 0 [])
-
-(* round-half-to-even of a float (banker's rounding), as round()/__round__ *)
-and round_half_even x =
-  let fl = Float.floor x in
-  let frac = x -. fl in
-  if frac < 0.5 then fl
-  else if frac > 0.5 then fl +. 1.
-  else if Float.rem fl 2. = 0. then fl
-  else fl +. 1.
-
-(* round an integer to a multiple of 10^k (k > 0), round-half-to-even *)
-and round_int_pow10 z k =
-  let s = Z.pow (Z.of_int 10) k in
-  let q = Z.div z s and r = Z.rem z s in
-  let half2 = Z.mul (Z.of_int 2) (Z.abs r) in
-  let bump =
-    match Z.compare half2 s with
-    | c when c > 0 -> true
-    | c when c < 0 -> false
-    | _ -> not (Z.equal (Z.rem q (Z.of_int 2)) Z.zero)
-  in
-  let q =
-    if not bump then q
-    else if Z.sign z >= 0 then Z.add q Z.one
-    else Z.sub q Z.one
-  in
-  Z.mul q s
-
-(* radix repr with CPython's prefixes: hex/bin/oct of an int, sign outside *)
-and radix_repr prefix base z =
-  let sign = if Z.sign z < 0 then "-" else "" in
-  let digits =
-    if Z.equal z Z.zero then "0"
-    else
-      let rec go acc z =
-        if Z.equal z Z.zero then acc
-        else
-          let d = Z.to_int (Z.rem z (Z.of_int base)) in
-          let c =
-            if d < 10 then Char.chr (d + Char.code '0')
-            else Char.chr (d - 10 + Char.code 'a')
-          in
-          go (String.make 1 c ^ acc) (Z.div z (Z.of_int base))
-      in
-      go "" (Z.abs z)
-  in
-  sign ^ prefix ^ digits
-
-and pad_str s width fill ~left ~right =
-  let len = utf8_length s in
-  if len >= width then s
-  else
-    let pad = width - len in
-    if left && right then
-      let l = pad / 2 in
-      String.make l fill ^ s ^ String.make (pad - l) fill
-    else if left then String.make pad fill ^ s
-    else s ^ String.make pad fill
 
 and call_builtin st name (args : value list) (kwargs : (string * value) list) :
     value r =
@@ -5474,7 +4277,7 @@ and call_builtin st name (args : value list) (kwargs : (string * value) list) :
           Ok (l, st))
   | "format", [ v ] -> call_builtin st "format" [ v; Str "" ] []
   | "format", [ v; Str spec ] ->
-      let* s, st = format_value st v spec in
+      let* s, st = Py_str.format_value st v spec in
       Ok (Str s, st)
   | "super", [ (Ref ca as _c); obj ] -> (
       match heap_get st ca with
@@ -5918,757 +4721,17 @@ and gen_send st g v : value r =
 
 and type_method st tag meth args kwargs : value r =
   match tag with
-  | "str" -> str_method st meth args
-  | "list" -> list_method st meth args kwargs
-  | "dict" -> dict_method st meth args kwargs
-  | "set" -> set_method st meth args
-  | "tuple" -> tuple_method st meth args
-  | "int" | "bool" -> int_method st meth args
-  | "float" -> float_method st meth args
-  | "complex" -> complex_method st meth args
-  | "bytes" -> bytes_method st meth args
-  | "bytearray" -> bytearray_method st meth args
+  | "str" -> Py_str.str_method st meth args
+  | "list" -> Py_list.list_method st meth args kwargs
+  | "dict" -> Py_dict.dict_method st meth args kwargs
+  | "set" -> Py_set.set_method st meth args
+  | "tuple" -> Py_tuple.tuple_method st meth args
+  | "int" | "bool" -> Py_num.int_method st meth args
+  | "float" -> Py_num.float_method st meth args
+  | "complex" -> Py_num.complex_method st meth args
+  | "bytes" -> Py_bytes.bytes_method st meth args
+  | "bytearray" -> Py_bytes.bytearray_method st meth args
   | _ -> raise_py st "RuntimeError" ("unknown method " ^ tag ^ "." ^ meth)
-
-and bytes_method st meth args : value r =
-  (* bytes mirror str's byte-oriented methods; results stay bytes *)
-  let byte_trim ~left ~right s =
-    let ws c =
-      c = ' ' || c = '\t' || c = '\n' || c = '\r' || c = '\011' || c = '\012'
-    in
-    let n = String.length s in
-    let i = ref 0 and j = ref n in
-    if left then
-      while !i < !j && ws s.[!i] do
-        incr i
-      done;
-    if right then
-      while !j > !i && ws s.[!j - 1] do
-        decr j
-      done;
-    String.sub s !i (!j - !i)
-  in
-  match (meth, args) with
-  (* ref: 3.2.5.1 — bytes.decode interprets the bytes as text (UTF-8/ASCII) *)
-  | "decode", [ Bytes s ] | "decode", [ Bytes s; Str _ ] -> Ok (Str s, st)
-  | "upper", [ Bytes s ] -> Ok (Bytes (String.uppercase_ascii s), st)
-  | "lower", [ Bytes s ] -> Ok (Bytes (String.lowercase_ascii s), st)
-  | "replace", [ Bytes s; Bytes o; Bytes n ] ->
-      Ok (Bytes (replace_substring s o n max_int), st)
-  | "replace", [ Bytes s; Bytes o; Bytes n; cnt ] ->
-      let* c, st = as_int st cnt "replace" in
-      Ok (Bytes (replace_substring s o n c), st)
-  | "split", [ Bytes s ] ->
-      let l, st =
-        alloc st (List (List.map (fun x -> Bytes x) (split_whitespace s)))
-      in
-      Ok (l, st)
-  | "split", [ Bytes s; Bytes sep ] ->
-      let l, st =
-        alloc st (List (List.map (fun x -> Bytes x) (split_on_sep s sep)))
-      in
-      Ok (l, st)
-  | "startswith", [ Bytes s; Bytes p ] ->
-      Ok
-        ( Bool
-            (String.length p <= String.length s
-            && String.sub s 0 (String.length p) = p),
-          st )
-  | "endswith", [ Bytes s; Bytes p ] ->
-      let ls = String.length s and lp = String.length p in
-      Ok (Bool (lp <= ls && String.sub s (ls - lp) lp = p), st)
-  | "find", [ Bytes s; Bytes sub ] -> (
-      match find_substring s sub with
-      | Some b -> Ok (Int (Z.of_int b), st)
-      | None -> Ok (Int Z.minus_one, st))
-  | "rfind", [ Bytes s; Bytes sub ] -> (
-      match rfind_substring s sub with
-      | Some b -> Ok (Int (Z.of_int b), st)
-      | None -> Ok (Int Z.minus_one, st))
-  | "index", [ Bytes s; Bytes sub ] -> (
-      match find_substring s sub with
-      | Some b -> Ok (Int (Z.of_int b), st)
-      | None -> raise_py st "ValueError" "subsection not found")
-  | "count", [ Bytes s; Bytes sub ] ->
-      Ok (Int (Z.of_int (count_nonoverlap s sub)), st)
-  | "strip", [ Bytes s ] -> Ok (Bytes (byte_trim ~left:true ~right:true s), st)
-  | "lstrip", [ Bytes s ] -> Ok (Bytes (byte_trim ~left:true ~right:false s), st)
-  | "rstrip", [ Bytes s ] -> Ok (Bytes (byte_trim ~left:false ~right:true s), st)
-  | "hex", [ Bytes s ] ->
-      let buf =
-        String.concat ""
-          (List.map (Printf.sprintf "%02x")
-             (List.map Char.code (List.of_seq (String.to_seq s))))
-      in
-      Ok (Str buf, st)
-  | "join", [ Bytes sep; v ] ->
-      let* items, st = to_list st v in
-      let parts = List.map (function Bytes b -> b | _ -> "") items in
-      Ok (Bytes (String.concat sep parts), st)
-  | _ -> raise_py st "RuntimeError" ("unknown bytes method " ^ meth)
-
-(* ref: 3.2.5.2 — bytearray methods. decode mirrors bytes; append/extend mutate
-   the array in place. *)
-and bytearray_method st meth args : value r =
-  let self_ba = function
-    | Ref a -> (
-        match heap_get st a with
-        | Bytearray s -> Ok ((a, s), st)
-        | _ -> raise_py st "TypeError" "expected a bytearray")
-    | _ -> raise_py st "TypeError" "expected a bytearray"
-  in
-  match (meth, args) with
-  | "decode", [ self ] | "decode", [ self; _ ] -> (
-      match as_bytes st self with
-      | Some s -> Ok (Str s, st)
-      | None -> raise_py st "TypeError" "expected a bytearray")
-  | "append", [ self; v ] -> (
-      let* (a, s), st = self_ba self in
-      match as_z v with
-      | Some z when Z.geq z Z.zero && Z.lt z (Z.of_int 256) ->
-          Ok
-            ( None_,
-              heap_set st a
-                (Bytearray (s ^ String.make 1 (Char.chr (Z.to_int z)))) )
-      | _ -> raise_py st "ValueError" "byte must be in range(0, 256)")
-  | "extend", [ self; other ] -> (
-      let* (a, s), st = self_ba self in
-      match as_bytes st other with
-      | Some o -> Ok (None_, heap_set st a (Bytearray (s ^ o)))
-      | None ->
-          raise_py st "TypeError" "can only extend bytearray with bytes-like")
-  | _ -> raise_py st "RuntimeError" ("unknown bytearray method " ^ meth)
-
-(* ref: 3.2.5 — build the raw byte string for a bytes()/bytearray() call:
-   empty, N zero bytes, copy of a bytes-like, str+encoding, or an iterable of
-   ints in range(0,256). *)
-and build_bytes st args : string r =
-  match args with
-  | [] -> Ok ("", st)
-  | [ Str _ ] -> raise_py st "TypeError" "string argument without an encoding"
-  | [ v ] when as_bytes st v <> None -> Ok (Option.get (as_bytes st v), st)
-  | [ v ] when as_z v <> None ->
-      Ok (String.make (max 0 (Z.to_int (Option.get (as_z v)))) '\000', st)
-  | [ Str s; Str enc ] ->
-      if enc = "utf-8" || enc = "utf8" || enc = "UTF-8" || enc = "ascii" then
-        Ok (s, st)
-      else raise_py st "LookupError" ("unknown encoding: " ^ enc)
-  | [ v ] ->
-      let* items, st = to_list st v in
-      fold_m st
-        (fun st acc x ->
-          match as_z x with
-          | Some z when Z.geq z Z.zero && Z.lt z (Z.of_int 256) ->
-              Ok (acc ^ String.make 1 (Char.chr (Z.to_int z)), st)
-          | Some _ -> raise_py st "ValueError" "bytes must be in range(0, 256)"
-          | None -> raise_py st "TypeError" "cannot convert object to bytes")
-        "" items
-  | _ -> raise_py st "TypeError" "wrong number of arguments"
-
-and str_method st meth args : value r =
-  let no_such () = raise_py st "RuntimeError" ("unknown str method " ^ meth) in
-  match (meth, args) with
-  | "upper", [ Str s ] -> Ok (Str (String.uppercase_ascii s), st)
-  | "lower", [ Str s ] -> Ok (Str (String.lowercase_ascii s), st)
-  | "capitalize", [ Str s ] ->
-      Ok (Str (String.capitalize_ascii (String.lowercase_ascii s)), st)
-  | "swapcase", [ Str s ] ->
-      Ok
-        ( Str
-            (String.map
-               (fun c ->
-                 if c >= 'a' && c <= 'z' then Char.uppercase_ascii c
-                 else if c >= 'A' && c <= 'Z' then Char.lowercase_ascii c
-                 else c)
-               s),
-          st )
-  | "title", [ Str s ] -> Ok (Str (title_case s), st)
-  | "strip", [ Str s ] -> Ok (Str (string_trim ~left:true ~right:true s), st)
-  | "lstrip", [ Str s ] -> Ok (Str (string_trim ~left:true ~right:false s), st)
-  | "rstrip", [ Str s ] -> Ok (Str (string_trim ~left:false ~right:true s), st)
-  | "split", [ Str s ] ->
-      let l, st =
-        alloc st (List (List.map (fun x -> Str x) (split_whitespace s)))
-      in
-      Ok (l, st)
-  | "split", [ Str s; Str sep ] ->
-      let l, st =
-        alloc st (List (List.map (fun x -> Str x) (split_on_sep s sep)))
-      in
-      Ok (l, st)
-  | "split", [ Str s; None_ ] ->
-      let l, st =
-        alloc st (List (List.map (fun x -> Str x) (split_whitespace s)))
-      in
-      Ok (l, st)
-  | "split", [ Str s; sep; cnt ] ->
-      (* ref: str.split(sep, maxsplit) — None sep splits on runs of whitespace *)
-      let* m, st = as_int st cnt "split" in
-      let parts =
-        match sep with
-        | Str sep -> split_on_sep_max s sep m
-        | _ -> split_whitespace_max s m
-      in
-      let l, st = alloc st (List (List.map (fun x -> Str x) parts)) in
-      Ok (l, st)
-  | "removeprefix", [ Str s; Str p ] ->
-      (* ref: str.removeprefix/removesuffix (PEP 616) *)
-      let lp = String.length p and ls = String.length s in
-      Ok
-        ( Str
-            (if lp <= ls && String.sub s 0 lp = p then String.sub s lp (ls - lp)
-             else s),
-          st )
-  | "removesuffix", [ Str s; Str p ] ->
-      let lp = String.length p and ls = String.length s in
-      Ok
-        ( Str
-            (if lp <= ls && lp > 0 && String.sub s (ls - lp) lp = p then
-               String.sub s 0 (ls - lp)
-             else s),
-          st )
-  | "join", [ Str sep; v ] ->
-      let* items, st = to_list st v in
-      let* parts, st = map_m st (fun st x -> as_str st x "join") items in
-      Ok (Str (String.concat sep parts), st)
-  | "replace", [ Str s; Str o; Str n ] ->
-      Ok (Str (replace_substring s o n max_int), st)
-  | "replace", [ Str s; Str o; Str n; cnt ] ->
-      let* c, st = as_int st cnt "replace" in
-      Ok (Str (replace_substring s o n c), st)
-  | "startswith", [ Str s; Str p ] ->
-      Ok
-        ( Bool
-            (String.length p <= String.length s
-            && String.sub s 0 (String.length p) = p),
-          st )
-  | "endswith", [ Str s; Str p ] ->
-      let ls = String.length s and lp = String.length p in
-      Ok (Bool (lp <= ls && String.sub s (ls - lp) lp = p), st)
-  | "find", [ Str s; Str sub ] -> (
-      match find_substring s sub with
-      | Some b -> Ok (Int (Z.of_int (utf8_length (String.sub s 0 b))), st)
-      | None -> Ok (Int Z.minus_one, st))
-  | "index", [ Str s; Str sub ] -> (
-      match find_substring s sub with
-      | Some b -> Ok (Int (Z.of_int (utf8_length (String.sub s 0 b))), st)
-      | None -> raise_py st "ValueError" "substring not found")
-  | "count", [ Str s; Str sub ] ->
-      Ok (Int (Z.of_int (count_nonoverlap s sub)), st)
-  | "rfind", [ Str s; Str sub ] -> (
-      match rfind_substring s sub with
-      | Some b -> Ok (Int (Z.of_int (utf8_length (String.sub s 0 b))), st)
-      | None -> Ok (Int Z.minus_one, st))
-  | "rindex", [ Str s; Str sub ] -> (
-      match rfind_substring s sub with
-      | Some b -> Ok (Int (Z.of_int (utf8_length (String.sub s 0 b))), st)
-      | None -> raise_py st "ValueError" "substring not found")
-  | "casefold", [ Str s ] -> Ok (Str (String.lowercase_ascii s), st)
-  | "isspace", [ Str s ] -> Ok (Bool (s <> "" && String.for_all is_space s), st)
-  | "isalnum", [ Str s ] ->
-      Ok
-        ( Bool
-            (s <> ""
-            && String.for_all
-                 (fun c ->
-                   (c >= 'a' && c <= 'z')
-                   || (c >= 'A' && c <= 'Z')
-                   || (c >= '0' && c <= '9'))
-                 s),
-          st )
-  | ("isnumeric" | "isdecimal"), [ Str s ] ->
-      Ok (Bool (s <> "" && String.for_all (fun c -> c >= '0' && c <= '9') s), st)
-  | "isidentifier", [ Str s ] ->
-      (* ref: a valid identifier — [A-Za-z_][A-Za-z0-9_]* (ASCII subset) *)
-      let id_start c =
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_'
-      in
-      let id_cont c = id_start c || (c >= '0' && c <= '9') in
-      Ok (Bool (s <> "" && id_start s.[0] && String.for_all id_cont s), st)
-  | "istitle", [ Str s ] -> Ok (Bool (is_titlecased s), st)
-  | "expandtabs", [ Str s ] -> Ok (Str (expand_tabs s 8), st)
-  | "expandtabs", [ Str s; n ] ->
-      let* w, st = as_int st n "expandtabs" in
-      Ok (Str (expand_tabs s w), st)
-  | "translate", [ Str s; table ] ->
-      let* out, st = str_translate st s table in
-      Ok (Str out, st)
-  | "encode", Str s :: rest ->
-      (* ref: str.encode(encoding='utf-8') -> bytes *)
-      let enc = match rest with Str e :: _ -> e | _ -> "utf-8" in
-      let* b, st = build_bytes st [ Str s; Str enc ] in
-      Ok (Bytes b, st)
-  | "isdigit", [ Str s ] ->
-      Ok (Bool (s <> "" && String.for_all (fun c -> c >= '0' && c <= '9') s), st)
-  | "isalpha", [ Str s ] ->
-      Ok
-        ( Bool
-            (s <> ""
-            && String.for_all
-                 (fun c -> (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
-                 s),
-          st )
-  | "isupper", [ Str s ] ->
-      let cased =
-        String.exists
-          (fun c -> (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
-          s
-      in
-      Ok
-        ( Bool (cased && not (String.exists (fun c -> c >= 'a' && c <= 'z') s)),
-          st )
-  | "islower", [ Str s ] ->
-      let cased =
-        String.exists
-          (fun c -> (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
-          s
-      in
-      Ok
-        ( Bool (cased && not (String.exists (fun c -> c >= 'A' && c <= 'Z') s)),
-          st )
-  | "center", Str s :: rest -> (
-      match rest with
-      | [ w ] ->
-          let* w, st = as_int st w "center" in
-          Ok (Str (pad_str s w ' ' ~left:true ~right:true), st)
-      | [ w; Str fill ] when String.length fill = 1 ->
-          let* w, st = as_int st w "center" in
-          Ok (Str (pad_str s w fill.[0] ~left:true ~right:true), st)
-      | _ -> no_such ())
-  | "zfill", [ Str s; w ] ->
-      let* w, st = as_int st w "zfill" in
-      Ok (Str (pad_str s w '0' ~left:true ~right:false), st)
-  | "ljust", Str s :: rest -> (
-      match rest with
-      | [ w ] ->
-          let* w, st = as_int st w "ljust" in
-          Ok (Str (pad_str s w ' ' ~left:false ~right:true), st)
-      | [ w; Str fill ] when String.length fill = 1 ->
-          let* w, st = as_int st w "ljust" in
-          Ok (Str (pad_str s w fill.[0] ~left:false ~right:true), st)
-      | _ -> no_such ())
-  | "rjust", Str s :: rest -> (
-      match rest with
-      | [ w ] ->
-          let* w, st = as_int st w "rjust" in
-          Ok (Str (pad_str s w ' ' ~left:true ~right:false), st)
-      | [ w; Str fill ] when String.length fill = 1 ->
-          let* w, st = as_int st w "rjust" in
-          Ok (Str (pad_str s w fill.[0] ~left:true ~right:false), st)
-      | _ -> no_such ())
-  | "partition", [ Str s; Str sep ] -> (
-      match find_substring s sep with
-      | Some i ->
-          Ok
-            ( Tuple
-                [
-                  Str (String.sub s 0 i);
-                  Str sep;
-                  Str
-                    (String.sub s
-                       (i + String.length sep)
-                       (String.length s - i - String.length sep));
-                ],
-              st )
-      | None -> Ok (Tuple [ Str s; Str ""; Str "" ], st))
-  | "rpartition", [ Str s; Str sep ] -> (
-      let rec last_at i best =
-        match find_substring ~from:i s sep with
-        | None -> best
-        | Some j -> last_at (j + 1) (Some j)
-      in
-      match last_at 0 None with
-      | Some i ->
-          Ok
-            ( Tuple
-                [
-                  Str (String.sub s 0 i);
-                  Str sep;
-                  Str
-                    (String.sub s
-                       (i + String.length sep)
-                       (String.length s - i - String.length sep));
-                ],
-              st )
-      | None -> Ok (Tuple [ Str ""; Str ""; Str s ], st))
-  | "splitlines", [ Str s ] ->
-      let lines = split_on_sep s "\n" in
-      let lines =
-        match List.rev lines with "" :: rest -> List.rev rest | _ -> lines
-      in
-      let l, st = alloc st (List (List.map (fun x -> Str x) lines)) in
-      Ok (l, st)
-  | "format", Str s :: rest ->
-      let* out, st = str_format st s rest in
-      Ok (Str out, st)
-  | _ -> no_such ()
-
-and list_method st meth args kwargs : value r =
-  let self_xs st = function
-    | Ref a -> (
-        match heap_get st a with
-        | List xs -> Ok ((a, xs), st)
-        | _ -> raise_py st "TypeError" "expected a list")
-    | _ -> raise_py st "TypeError" "expected a list"
-  in
-  match (meth, args) with
-  | "append", [ self; v ] ->
-      let* (a, xs), st = self_xs st self in
-      Ok (None_, heap_set st a (List (xs @ [ v ])))
-  | "extend", [ self; v ] ->
-      let* (a, xs), st = self_xs st self in
-      let* items, st = to_list st v in
-      Ok (None_, heap_set st a (List (xs @ items)))
-  | "insert", [ self; i; v ] ->
-      let* (a, xs), st = self_xs st self in
-      let* i, st = as_int st i "insert" in
-      let len = List.length xs in
-      let i = if i < 0 then max 0 (i + len) else min i len in
-      let before, after = take i xs in
-      Ok (None_, heap_set st a (List (before @ (v :: after))))
-  | "pop", [ self ] -> (
-      let* (a, xs), st = self_xs st self in
-      match List.rev xs with
-      | [] -> raise_py st "IndexError" "pop from empty list"
-      | last :: rest -> Ok (last, heap_set st a (List (List.rev rest))))
-  | "pop", [ self; i ] ->
-      let* (a, xs), st = self_xs st self in
-      let* i, st = as_int st i "pop" in
-      let len = List.length xs in
-      let i = if i < 0 then i + len else i in
-      if i < 0 || i >= len then
-        raise_py st "IndexError" "pop index out of range"
-      else Ok (List.nth xs i, heap_set st a (List (list_del_nth xs i)))
-  | "remove", [ self; v ] ->
-      let* (a, xs), st = self_xs st self in
-      let rec go st i = function
-        | [] -> raise_py st "ValueError" "list.remove(x): x not in list"
-        | x :: rest ->
-            let* eq, st = py_eq st x v in
-            if eq then Ok (i, st) else go st (i + 1) rest
-      in
-      let* i, st = go st 0 xs in
-      Ok (None_, heap_set st a (List (list_del_nth xs i)))
-  | "index", [ self; v ] ->
-      let* (_, xs), st = self_xs st self in
-      let rec go st i = function
-        | [] -> raise_py st "ValueError" "value is not in list"
-        | x :: rest ->
-            let* eq, st = py_eq st x v in
-            if eq then Ok (Int (Z.of_int i), st) else go st (i + 1) rest
-      in
-      go st 0 xs
-  | "count", [ self; v ] ->
-      let* (_, xs), st = self_xs st self in
-      let* n, st =
-        fold_m st
-          (fun st acc x ->
-            let* eq, st = py_eq st x v in
-            Ok ((if eq then acc + 1 else acc), st))
-          0 xs
-      in
-      Ok (Int (Z.of_int n), st)
-  | "reverse", [ self ] ->
-      let* (a, xs), st = self_xs st self in
-      Ok (None_, heap_set st a (List (List.rev xs)))
-  | "clear", [ self ] ->
-      let* (a, _), st = self_xs st self in
-      Ok (None_, heap_set st a (List []))
-  | "sort", [ self ] ->
-      let* (a, xs), st = self_xs st self in
-      let key = Option.value (List.assoc_opt "key" kwargs) ~default:None_ in
-      let* rev, st =
-        match List.assoc_opt "reverse" kwargs with
-        | Some r -> py_truth st r
-        | None -> Ok (false, st)
-      in
-      let* sorted, st = sorted_values st xs ~key ~reverse:rev in
-      Ok (None_, heap_set st a (List sorted))
-  | "copy", [ self ] ->
-      let* (_, xs), st = self_xs st self in
-      let l, st = alloc st (List xs) in
-      Ok (l, st)
-  | _ -> raise_py st "RuntimeError" ("unknown list method " ^ meth)
-
-and dict_method st meth args kwargs : value r =
-  let self_d st = function
-    | Ref a -> (
-        match heap_get st a with
-        | Dict ps -> Ok ((a, ps), st)
-        | _ -> raise_py st "TypeError" "expected a dict")
-    | _ -> raise_py st "TypeError" "expected a dict"
-  in
-  match (meth, args) with
-  | "get", [ self; k ] | "get", [ self; k; _ ] -> (
-      let* (_, ps), st = self_d st self in
-      let* found, st = dict_find st ps k in
-      match found with
-      | Some v -> Ok (v, st)
-      | None -> Ok ((match args with [ _; _; d ] -> d | _ -> None_), st))
-  | "keys", [ self ] ->
-      let* (_, ps), st = self_d st self in
-      let l, st = alloc st (List (List.map fst ps)) in
-      Ok (l, st)
-  | "values", [ self ] ->
-      let* (_, ps), st = self_d st self in
-      let l, st = alloc st (List (List.map snd ps)) in
-      Ok (l, st)
-  | "items", [ self ] ->
-      let* (_, ps), st = self_d st self in
-      let l, st =
-        alloc st (List (List.map (fun (k, v) -> Tuple [ k; v ]) ps))
-      in
-      Ok (l, st)
-  | "pop", [ self; k ] | "pop", [ self; k; _ ] -> (
-      let* (a, ps), st = self_d st self in
-      let* found, st = dict_find st ps k in
-      match found with
-      | Some v ->
-          let* _, st = dict_del st a k in
-          Ok (v, st)
-      | None -> (
-          match args with [ _; _; d ] -> Ok (d, st) | _ -> raise_key st k))
-  | "setdefault", [ self; k ] ->
-      dict_method st "setdefault" [ self; k; None_ ] kwargs
-  | "setdefault", [ self; k; d ] -> (
-      let* (a, ps), st = self_d st self in
-      let* found, st = dict_find st ps k in
-      match found with
-      | Some v -> Ok (v, st)
-      | None ->
-          let* (), st = dict_set st a k d in
-          Ok (d, st))
-  | "update", self :: rest ->
-      (* ref: 3.2.7.1 — update(other?, **kwargs): merge a dict or an iterable of
-         (key, value) pairs, then the keyword arguments *)
-      let* (a, _), st = self_d st self in
-      let* (), st =
-        match rest with
-        | [] -> Ok ((), st)
-        | other :: _ -> (
-            match deref st other with
-            | Some (Dict ops) ->
-                fold_m st (fun st () (k, v) -> dict_set st a k v) () ops
-            | _ ->
-                let* items, st = to_list st other in
-                fold_m st
-                  (fun st () pair ->
-                    match pair with
-                    | Tuple [ k; v ] -> dict_set st a k v
-                    | _ -> (
-                        let* kv, st = to_list st pair in
-                        match kv with
-                        | [ k; v ] -> dict_set st a k v
-                        | _ ->
-                            raise_py st "ValueError"
-                              "dictionary update sequence element has length \
-                               != 2"))
-                  () items)
-      in
-      let* (), st =
-        fold_m st (fun st () (k, v) -> dict_set st a (Str k) v) () kwargs
-      in
-      Ok (None_, st)
-  | "copy", [ self ] ->
-      let* (_, ps), st = self_d st self in
-      let d, st = alloc st (Dict ps) in
-      Ok (d, st)
-  | "clear", [ self ] ->
-      let* (a, _), st = self_d st self in
-      Ok (None_, heap_set st a (Dict []))
-  | "popitem", [ self ] -> (
-      (* ref: 3.2.7.1 — popitem removes and returns the last inserted (key,
-         value) pair (LIFO); empty dict is a KeyError *)
-      let* (a, ps), st = self_d st self in
-      match List.rev ps with
-      | (k, v) :: _ ->
-          let* _, st = dict_del st a k in
-          Ok (Tuple [ k; v ], st)
-      | [] -> raise_key st (Str "popitem(): dictionary is empty"))
-  | _ -> raise_py st "RuntimeError" ("unknown dict method " ^ meth)
-
-and set_method st meth args : value r =
-  let self_s st = function
-    | Ref a -> (
-        match heap_get st a with
-        | Set xs -> Ok ((a, xs), st)
-        | _ -> raise_py st "TypeError" "expected a set")
-    | _ -> raise_py st "TypeError" "expected a set"
-  in
-  match (meth, args) with
-  | "add", [ self; v ] ->
-      let* (a, xs), st = self_s st self in
-      let* (), st = check_hashable st v in
-      let* m, st = set_mem st xs v in
-      Ok (None_, if m then st else heap_set st a (Set (xs @ [ v ])))
-  | "discard", [ self; v ] | "remove", [ self; v ] -> (
-      let* (a, xs), st = self_s st self in
-      let rec go st i = function
-        | [] -> Ok (None, st)
-        | x :: rest ->
-            let* eq, st = py_eq st x v in
-            if eq then Ok (Some i, st) else go st (i + 1) rest
-      in
-      let* found, st = go st 0 xs in
-      match found with
-      | Some i -> Ok (None_, heap_set st a (Set (list_del_nth xs i)))
-      | None -> if meth = "remove" then raise_key st v else Ok (None_, st))
-  | ( ("union" | "intersection" | "difference" | "symmetric_difference"),
-      [ self; other ] ) ->
-      (* ref: 3.2.6 — the named set algebra methods accept any iterable *)
-      let* (_, xs), st = self_s st self in
-      let* ys, st = to_list st other in
-      let op =
-        match meth with
-        | "union" -> Phir.Or
-        | "intersection" -> And
-        | "difference" -> Sub
-        | _ -> Xor
-      in
-      set_binop st op xs ys ~frozen:false
-  | ("issubset" | "issuperset" | "isdisjoint"), [ self; other ] -> (
-      let* (_, xs), st = self_s st self in
-      let* ys, st = to_list st other in
-      match meth with
-      | "issubset" ->
-          let* b, st = set_subset st xs ys in
-          Ok (Bool b, st)
-      | "issuperset" ->
-          let* b, st = set_subset st ys xs in
-          Ok (Bool b, st)
-      | _ ->
-          (* isdisjoint: no shared element *)
-          let* shared, st =
-            fold_m st
-              (fun st acc y -> if acc then Ok (true, st) else set_mem st xs y)
-              false ys
-          in
-          Ok (Bool (not shared), st))
-  | "update", [ self; other ] ->
-      let* (a, xs), st = self_s st self in
-      let* ys, st = to_list st other in
-      let* merged, st =
-        fold_m st
-          (fun st acc y ->
-            let* m, st = set_mem st acc y in
-            Ok ((if m then acc else acc @ [ y ]), st))
-          xs ys
-      in
-      Ok (None_, heap_set st a (Set merged))
-  | "pop", [ self ] -> (
-      let* (a, xs), st = self_s st self in
-      match xs with
-      | x :: rest -> Ok (x, heap_set st a (Set rest))
-      | [] -> raise_key st (Str "pop from an empty set"))
-  | "clear", [ self ] ->
-      let* (a, _), st = self_s st self in
-      Ok (None_, heap_set st a (Set []))
-  | "copy", [ self ] ->
-      let* (_, xs), st = self_s st self in
-      let s, st = alloc st (Set xs) in
-      Ok (s, st)
-  | _ -> raise_py st "RuntimeError" ("unknown set method " ^ meth)
-
-and tuple_method st meth args : value r =
-  match (meth, args) with
-  | "count", [ Tuple xs; v ] ->
-      let* n, st =
-        fold_m st
-          (fun st acc x ->
-            let* eq, st = py_eq st x v in
-            Ok ((if eq then acc + 1 else acc), st))
-          0 xs
-      in
-      Ok (Int (Z.of_int n), st)
-  | "index", [ Tuple xs; v ] ->
-      let rec go st i = function
-        | [] -> raise_py st "ValueError" "tuple.index(x): x not in tuple"
-        | x :: rest ->
-            let* eq, st = py_eq st x v in
-            if eq then Ok (Int (Z.of_int i), st) else go st (i + 1) rest
-      in
-      go st 0 xs
-  | _ -> raise_py st "RuntimeError" ("unknown tuple method " ^ meth)
-
-and int_method st meth args : value r =
-  match (meth, args) with
-  | "bit_length", [ v ] -> (
-      match as_z v with
-      | Some z -> Ok (Int (Z.of_int (Z.numbits (Z.abs z))), st)
-      | None -> raise_py st "TypeError" "bit_length expects an int")
-  | "bit_count", [ v ] -> (
-      match as_z v with
-      | Some z -> Ok (Int (Z.of_int (Z.popcount (Z.abs z))), st)
-      | None -> raise_py st "TypeError" "bit_count expects an int")
-  | "conjugate", [ v ] -> Ok (v, st)
-  | "to_bytes", v :: rest when as_z v <> None ->
-      (* ref: int.to_bytes(length=1, byteorder='big', *, signed=False) *)
-      let z = Option.get (as_z v) in
-      let length =
-        match rest with
-        | l :: _ -> ( match as_z l with Some n -> Z.to_int n | None -> 1)
-        | [] -> 1
-      in
-      let order = match rest with _ :: Str o :: _ -> o | _ -> "big" in
-      if Z.sign z < 0 then
-        raise_py st "OverflowError" "can't convert negative int to unsigned"
-      else if Z.numbits z > length * 8 then
-        raise_py st "OverflowError" "int too big to convert"
-      else
-        let byte i =
-          Char.chr
-            (Z.to_int (Z.logand (Z.shift_right z (8 * i)) (Z.of_int 0xff)))
-        in
-        let big = List.init length (fun i -> byte (length - 1 - i)) in
-        let bytes = if order = "little" then List.rev big else big in
-        Ok (Bytes (String.init length (List.nth bytes)), st)
-  | "from_bytes", b :: rest -> (
-      (* ref: int.from_bytes(bytes, byteorder='big') — a classmethod *)
-      match as_bytes st b with
-      | Some s ->
-          let order = match rest with Str o :: _ -> o | _ -> "big" in
-          let chars = List.of_seq (String.to_seq s) in
-          let chars = if order = "little" then List.rev chars else chars in
-          let z =
-            List.fold_left
-              (fun acc c -> Z.add (Z.shift_left acc 8) (Z.of_int (Char.code c)))
-              Z.zero chars
-          in
-          Ok (Int z, st)
-      | None -> raise_py st "TypeError" "cannot convert object to bytes")
-  | "__add__", [ a; b ] -> num_binop st Add a b
-  | _ -> raise_py st "RuntimeError" ("unknown int method " ^ meth)
-
-and float_method st meth args : value r =
-  match (meth, args) with
-  | "is_integer", [ Float f ] -> Ok (Bool (Float.is_integer f), st)
-  | "conjugate", [ v ] -> Ok (v, st)
-  | "as_integer_ratio", [ Float f ] ->
-      (* ref: 3.2.4.2 — exact (numerator, denominator) for a float *)
-      let num, den = float_as_integer_ratio f in
-      Ok (Tuple [ Int num; Int den ], st)
-  | _ -> raise_py st "RuntimeError" ("unknown float method " ^ meth)
-
-(* exact rational (numerator, denominator) of a finite float, like CPython's
-   float.as_integer_ratio *)
-and float_as_integer_ratio f =
-  if not (Float.is_finite f) then (Z.zero, Z.one) (* unreachable in tests *)
-  else
-    let m, e = Float.frexp f in
-    (* m * 2^e, m in [0.5,1); scale m to an integer mantissa *)
-    let rec scale m e =
-      if Float.is_integer m || e <= -1075 then (m, e)
-      else scale (m *. 2.) (e - 1)
-    in
-    let m, e = scale m e in
-    let num = Z.of_float m and den = Z.one in
-    if e >= 0 then (Z.mul num (Z.shift_left Z.one e), den)
-    else (num, Z.shift_left den (-e))
-
-and complex_method st meth args : value r =
-  match (meth, args) with
-  | "conjugate", [ Complex (re, im) ] -> Ok (Complex (re, -.im), st)
-  | _ -> raise_py st "RuntimeError" ("unknown complex method " ^ meth)
 
 (* ---------- builtin type constructors ------------------------------- *)
 
@@ -6685,7 +4748,7 @@ and builtin_class_call st tag args kwargs : value r =
       | Int _ -> Ok (v, st)
       | Bool b -> Ok (Int (if b then Z.one else Z.zero), st)
       | Float f -> Ok (Int (Z.of_float f), st)
-      | Str s -> parse_int st s 10
+      | Str s -> Py_num.parse_int st s 10
       | _ when is_instance_value st v -> (
           (* ref: 3.3.8 — int() uses __int__, falling back to __index__ *)
           let* m, st = find_dunder st v "__int__" in
@@ -6706,7 +4769,7 @@ and builtin_class_call st tag args kwargs : value r =
       )
   | "int", [ Str s; base ] ->
       let* b, st = as_int st base "int" in
-      parse_int st s b
+      Py_num.parse_int st s b
   | "float", [] -> Ok (Float 0., st)
   | "float", [ v ] -> (
       match v with
@@ -6821,10 +4884,10 @@ and builtin_class_call st tag args kwargs : value r =
   (* ref: 3.2.5.1 — bytes(): empty / n zero bytes / from an iterable of ints /
      from a string + encoding *)
   | "bytes", args ->
-      let* s, st = build_bytes st args in
+      let* s, st = Py_bytes.build_bytes st args in
       Ok (Bytes s, st)
   | "bytearray", args ->
-      let* s, st = build_bytes st args in
+      let* s, st = Py_bytes.build_bytes st args in
       Ok (alloc st (Bytearray s))
   | "range", [ stop ] -> (
       match as_z stop with
@@ -6862,65 +4925,54 @@ and builtin_class_call st tag args kwargs : value r =
       raise_py st "TypeError"
         (Printf.sprintf "cannot call %s() with these arguments" tag)
 
-and parse_int st s base : value r =
-  (* ref: int(str, base) — bases 2..36 or 0 (auto-detect from prefix); a literal
-     may carry the matching 0x/0o/0b prefix, an optional sign, and single
-     underscores between digits *)
-  let err () =
-    raise_py st "ValueError"
-      (Printf.sprintf "invalid literal for int() with base %d: %s" base
-         (str_repr s))
-  in
-  if base <> 0 && (base < 2 || base > 36) then
-    raise_py st "ValueError" "int() base must be >= 2 and <= 36, or 0"
-  else
-    let t = String.trim s in
-    let neg, body =
-      if t <> "" && (t.[0] = '+' || t.[0] = '-') then
-        (t.[0] = '-', String.sub t 1 (String.length t - 1))
-      else (false, t)
-    in
-    let lower = String.lowercase_ascii body in
-    let has2 p = String.length lower >= 2 && lower.[0] = '0' && lower.[1] = p in
-    let drop2 s = String.sub s 2 (String.length s - 2) in
-    let base, digits =
-      match base with
-      | 0 ->
-          if has2 'x' then (16, drop2 body)
-          else if has2 'o' then (8, drop2 body)
-          else if has2 'b' then (2, drop2 body)
-          else (10, body)
-      | 16 when has2 'x' -> (16, drop2 body)
-      | 8 when has2 'o' -> (8, drop2 body)
-      | 2 when has2 'b' -> (2, drop2 body)
-      | b -> (b, body)
-    in
-    let digit c =
-      if c >= '0' && c <= '9' then Char.code c - Char.code '0'
-      else if c >= 'a' && c <= 'z' then Char.code c - Char.code 'a' + 10
-      else if c >= 'A' && c <= 'Z' then Char.code c - Char.code 'A' + 10
-      else 99
-    in
-    let zbase = Z.of_int base in
-    let n = String.length digits in
-    let rec go acc prev_us i =
-      if i >= n then if i = 0 || prev_us then err () else Ok (Int acc, st)
-      else
-        let c = digits.[i] in
-        if c = '_' then if i = 0 || prev_us then err () else go acc true (i + 1)
-        else
-          let d = digit c in
-          if d >= base then err ()
-          else go (Z.add (Z.mul acc zbase) (Z.of_int d)) false (i + 1)
-    in
-    let* v, st = go Z.zero false 0 in
-    match v with
-    | Int z -> Ok (Int (if neg then Z.neg z else z), st)
-    | _ -> err ()
-
 (* ------------------------------------------------------------------ *)
 (* Entry point                                                         *)
 (* ------------------------------------------------------------------ *)
+
+(* The effect handler that ties the knot: each back-edge effect performed by a
+   per-type module ([Py_str], [Py_dict], ...) is dispatched here to the matching
+   core function. Tail-resumptive — the dispatched computation runs to
+   completion (under [handle] again, so its own nested effects are caught) and
+   the continuation is resumed exactly once with the result. See [Effects]. *)
+let rec handle : type a. (unit -> a) -> a =
+ fun thunk ->
+  let open Effect.Deep in
+  try_with thunk ()
+    {
+      effc =
+        (fun (type b) (eff : b Effect.t) ->
+          let dispatch (f : unit -> b) =
+            Some (fun (k : (b, a) continuation) -> continue k (handle f))
+          in
+          match eff with
+          | Effects.Call (st, f, a, kw) -> dispatch (fun () -> call st f a kw)
+          | Effects.Repr (st, v) -> dispatch (fun () -> py_repr st v)
+          | Effects.Str_of (st, v) -> dispatch (fun () -> py_str st v)
+          | Effects.Eq (st, a, b) -> dispatch (fun () -> py_eq st a b)
+          | Effects.Truth (st, v) -> dispatch (fun () -> py_truth st v)
+          | Effects.To_list (st, v) -> dispatch (fun () -> to_list st v)
+          | Effects.Find_dunder (st, v, n) ->
+              dispatch (fun () -> find_dunder st v n)
+          | Effects.Dget (st, a, key) -> dispatch (fun () -> dget st a key)
+          | Effects.Dict_find (st, ps, key) ->
+              dispatch (fun () -> dict_find st ps key)
+          | Effects.Dict_set (st, a, key, v) ->
+              dispatch (fun () -> dict_set st a key v)
+          | Effects.Dict_del (st, a, key) ->
+              dispatch (fun () -> dict_del st a key)
+          | Effects.Check_hashable (st, v) ->
+              dispatch (fun () -> check_hashable st v)
+          | Effects.Set_mem (st, xs, x) -> dispatch (fun () -> set_mem st xs x)
+          | Effects.Set_subset (st, xs, ys) ->
+              dispatch (fun () -> set_subset st xs ys)
+          | Effects.Set_binop (st, op, xs, ys, frozen) ->
+              dispatch (fun () -> set_binop st op xs ys ~frozen)
+          | Effects.Sorted_values (st, items, key, reverse) ->
+              dispatch (fun () -> sorted_values st items ~key ~reverse)
+          | Effects.Num_binop (st, op, a, b) ->
+              dispatch (fun () -> num_binop st op a b)
+          | _ -> None);
+    }
 
 let run_module (code : Phir.code) : (string, string) result =
   let st = boot () in
@@ -6936,13 +4988,17 @@ let run_module (code : Phir.code) : (string, string) result =
       closure = [];
     }
   in
-  match run_frame st frame with
-  | Ok (Returned _, st) -> Ok (collected_output st)
-  | Ok (Yielded _, _) -> Error "module-level yield?"
-  | Error (exc, st) ->
-      let msg =
-        match py_str st exc with Ok (s, _) -> s | Error _ -> "<unprintable>"
-      in
-      Error (Printf.sprintf "Uncaught %s: %s" (type_name st exc) msg)
+  let go () =
+    match run_frame st frame with
+    | Ok (Returned _, st) -> Ok (collected_output st)
+    | Ok (Yielded _, _) -> Error "module-level yield?"
+    | Error (exc, st) ->
+        let msg =
+          match py_str st exc with Ok (s, _) -> s | Error _ -> "<unprintable>"
+        in
+        Error (Printf.sprintf "Uncaught %s: %s" (type_name st exc) msg)
+  in
+  match handle go with
+  | result -> result
   | exception Stack_overflow -> Error "OCaml stack overflow"
   | exception e -> Error ("interpreter bug: " ^ Printexc.to_string e)

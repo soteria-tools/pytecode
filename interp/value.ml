@@ -398,3 +398,107 @@ let py_float_mod a b =
   if r <> 0. && r < 0. <> (b < 0.) then r +. b else r
 
 let py_float_floordiv a b = Float.floor (a /. b)
+
+(* ------------------------------------------------------------------ *)
+(* Shared pure helpers (no recursion into the interpreter knot)        *)
+(* ------------------------------------------------------------------ *)
+
+let addr = function Ref a -> a | _ -> invalid_arg "addr"
+
+let cls_of st a =
+  match heap_get st a with Class c -> c | _ -> invalid_arg "cls_of"
+
+let dict_pairs st a =
+  match heap_get st a with Dict ps -> ps | _ -> invalid_arg "dict_pairs"
+
+(* monadic list combinators (state threaded, short-circuit on Error) *)
+let rec map_m st f = function
+  | [] -> Ok ([], st)
+  | x :: xs ->
+      let* y, st = f st x in
+      let* ys, st = map_m st f xs in
+      Ok (y :: ys, st)
+
+let rec fold_m st f acc = function
+  | [] -> Ok (acc, st)
+  | x :: xs ->
+      let* acc, st = f st acc x in
+      fold_m st f acc xs
+
+let rec take n = function
+  | xs when n = 0 -> ([], xs)
+  | x :: xs ->
+      let a, b = take (n - 1) xs in
+      (x :: a, b)
+  | [] -> invalid_arg "take"
+
+let rec drop n xs =
+  if n <= 0 then xs else match xs with [] -> [] | _ :: t -> drop (n - 1) t
+
+(* ---------- numeric coercions (pure) ------------------------------- *)
+
+let as_z = function
+  | Int z -> Some z
+  | Bool b -> Some (if b then Z.one else Z.zero)
+  | _ -> None
+
+let as_float = function
+  | Float f -> Some f
+  | Int z -> Some (Z.to_float z)
+  | Bool b -> Some (if b then 1. else 0.)
+  | _ -> None
+
+let is_number v = as_float v <> None
+let is_complex = function Complex _ -> true | _ -> false
+
+(* any numeric operand, including complex (real types embed as imag 0) *)
+let is_numeric v = is_number v || is_complex v
+
+let as_complex = function
+  | Complex (re, im) -> Some (re, im)
+  | v -> ( match as_float v with Some f -> Some (f, 0.) | None -> None)
+
+(* ref: 3.2.5 — the raw bytes of a bytes-like object (bytes or bytearray); used
+   for cross-type comparison, concatenation and membership. *)
+let as_bytes st v =
+  match v with
+  | Bytes s -> Some s
+  | Ref a -> ( match heap_get st a with Bytearray s -> Some s | _ -> None)
+  | _ -> None
+
+(* ref: 6.10.1 Value comparisons (numbers compared mathematically) and 3.2.4.2
+   Real — IEEE 754 semantics. Numeric equality and ordering; assume both are
+   numbers. *)
+let num_eq a b =
+  match (as_z a, as_z b) with
+  | Some x, Some y -> Z.equal x y
+  | _ -> Option.get (as_float a) = Option.get (as_float b)
+
+let num_lt a b =
+  match (as_z a, as_z b) with
+  | Some x, Some y -> Z.lt x y
+  | _ -> Option.get (as_float a) < Option.get (as_float b)
+
+let num_le a b =
+  match (as_z a, as_z b) with
+  | Some x, Some y -> Z.leq x y
+  | _ -> Option.get (as_float a) <= Option.get (as_float b)
+
+(* Object identity, matching the `is` operator: heap objects by address, other
+   immediates structurally. *)
+let val_identical a b =
+  match (a, b) with
+  | Ref x, Ref y -> x = y
+  | Null, Null -> true
+  | Ref _, _ | _, Ref _ -> false
+  | x, y -> x = y
+
+let is_instance_value st = function
+  | Ref a -> ( match heap_get st a with Instance _ -> true | _ -> false)
+  | _ -> false
+
+(* the underlying payload of a built-in-subclass instance, if any *)
+let native_of st v : value option =
+  match deref st v with
+  | Some (Instance { native; _ }) when native <> None_ -> Some native
+  | _ -> None
