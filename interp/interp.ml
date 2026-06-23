@@ -2720,6 +2720,8 @@ and del_unsupported : 'a. state -> value -> 'a r =
 
 (* ---------- sorting (monadic merge sort: comparisons run user code) -- *)
 
+(* ref: the built-in sorted() and list.sort() — a stable sort ordering by < (so
+   a user __lt__ runs), with an optional [key] function and [reverse] flag. *)
 and sorted_values st items ~key ~reverse : value list r =
   let* keyed, st =
     map_m st
@@ -2760,6 +2762,8 @@ and sorted_values st items ~key ~reverse : value list r =
   let* sorted, st = msort st keyed in
   Ok (List.map snd sorted, st)
 
+(* ref: the built-in min() / max() — the smallest/largest item by < (optionally
+   under a [key]); on a tie the first-seen item wins. *)
 and extremum st items ~key ~want_max : value r =
   match items with
   | [] -> raise_py st "ValueError" "min()/max() of empty iterable"
@@ -2782,6 +2786,8 @@ and extremum st items ~key ~want_max : value r =
 
 (* ---------- variables ---------------------------------------------- *)
 
+(* ref: 4.2.2 Resolution of names — search the namespace chain in order (e.g.
+   local/enclosing, then global, then builtins), raising NameError if absent. *)
 and name_chain_lookup st (f : frame) chain s : value r =
   let rec go st = function
     | [] ->
@@ -2792,6 +2798,9 @@ and name_chain_lookup st (f : frame) chain s : value r =
   in
   go st (chain f)
 
+(* ref: 4.2 Naming and binding — read a variable. A local (Fast) slot, a closure
+   cell (Deref, a free/cell variable), or a Name/Global resolved through the
+   namespace chain (4.2.2); an unset local raises UnboundLocalError (4.2.1). *)
 and load_var st (f : frame) (v : Phir.var) : value r =
   match v with
   | Fast i -> (
@@ -2819,6 +2828,8 @@ and load_var st (f : frame) (v : Phir.var) : value r =
       name_chain_lookup st f (fun f -> [ f.ns; f.globals; st.builtins ]) s
   | Global s -> name_chain_lookup st f (fun f -> [ f.globals; st.builtins ]) s
 
+(* ref: 4.2.1 Binding of names / 7.2 Assignment statements — bind a variable:
+   write a local slot, a closure cell, or a namespace (ns/globals) entry. *)
 and store_var st (f : frame) (x : Phir.var) v : frame r =
   match x with
   | Fast i ->
@@ -2837,6 +2848,8 @@ and store_var st (f : frame) (x : Phir.var) v : frame r =
       let* (), st = dict_set st f.globals (Str s) v in
       Ok (f, st)
 
+(* ref: 7.5 The del statement / 4.2.1 — unbind a variable; deleting an unbound
+   local raises UnboundLocalError, an unbound global/name a NameError. *)
 and del_var st (f : frame) (x : Phir.var) : frame r =
   match x with
   | Fast i ->
@@ -2863,6 +2876,9 @@ and del_var st (f : frame) (x : Phir.var) : frame r =
 
 (* ---------- operand evaluation -------------------------------------- *)
 
+(* ref: 6.2.1 Literals / 6.2.2 (and 2.4 lexical literals) — materialise a code
+   constant: numbers, strings, bytes, None/Ellipsis, and tuples/frozensets of
+   constants. *)
 and const_value st (c : Ast.const) : value r =
   match c with
   | Ast.None_ -> Ok (None_, st)
@@ -2886,8 +2902,9 @@ and const_value st (c : Ast.const) : value r =
   | Ast.Bytes s -> Ok (Bytes s, st) (* ref: 3.2.5.1 — bytes literal *)
   | Ast.Code _ -> unsupported st "constant kind"
 
-(* Stack operands form a prefix (popped here, rightmost = TOS); folded
-   operands evaluate left to right. *)
+(* ref: 6.16 Evaluation order — operands evaluate left to right. Stack operands
+   form a prefix (popped here, rightmost = TOS); folded constant/variable
+   operands are read in source order. *)
 and eval_operands st (f : frame) (ops : Phir.value list) :
     (value list * frame) r =
   let n_stack =
@@ -2917,6 +2934,9 @@ and eval_operands st (f : frame) (ops : Phir.value list) :
 
 (* ---------- calls ---------------------------------------------------- *)
 
+(* ref: 6.3.4 Calls — invoke a callable: a builtin, a bound method, a Python
+   function ([call_func]), a class (instantiation through its metaclass, 3.3.3),
+   or an instance via __call__ (3.3.8); otherwise TypeError. *)
 and call st (callee : value) (args : value list) kwargs : value r =
   match callee with
   | Builtin name -> call_builtin st name args kwargs
@@ -2951,6 +2971,8 @@ and not_callable : 'a. state -> value -> 'a r =
   raise_py st "TypeError"
     (Printf.sprintf "'%s' object is not callable" (type_name st v))
 
+(* ref: 6.3.4 / 8.7 — call a user-defined function: bind the arguments to
+   parameter slots ([bind_args]) and run a fresh frame to its return. *)
 and call_func st (fn : func) args kwargs : value r =
   let* slots, st = bind_args st fn args kwargs in
   let frame =
@@ -2969,6 +2991,10 @@ and call_func st (fn : func) args kwargs : value r =
   | Returned v -> Ok (v, st)
   | Yielded _ -> raise_py st "RuntimeError" "yield escaped its generator"
 
+(* ref: 6.3.4 Calls / 8.7 Function definitions — match call arguments to the
+   parameter slots: positional (incl. positional-only), keyword (incl.
+   keyword-only), *args and **kwargs, then fill defaults; report extra,
+   duplicate or missing arguments as CPython phrases them. *)
 and bind_args st (fn : func) args kwargs : value Int_map.t r =
   let code = fn.code in
   let pname i = fst code.localsplus.(i) in
@@ -3129,11 +3155,17 @@ and bind_args st (fn : func) args kwargs : value Int_map.t r =
 
 (* ---------- frame execution ----------------------------------------- *)
 
+(* ref: 4.3 Exceptions / 8.4 The try statement — the exception table maps an
+   instruction range to the handler that try/except/finally and with (8.5)
+   compiled to; this finds the entry covering the faulting instruction. *)
 and find_handler (table : Ast.exn_entry array) idx : Ast.exn_entry option =
   Array.find_opt
     (fun (e : Ast.exn_entry) -> e.start_idx <= idx && idx < e.end_idx)
     table
 
+(* ref: 4.3 Exceptions — run the instructions of a frame to completion; when one
+   raises, transfer to the enclosing handler (via the exception table) unwinding
+   the operand stack, else propagate the exception out of the frame. *)
 and run_frame st (f : frame) : frame_outcome r =
   match exec_instr st f f.code.instrs.(f.idx) with
   | Ok (Next f', st) -> run_frame st (advance f')
@@ -3468,10 +3500,14 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
         | If_not_none -> Ok (v <> None_, st)
       in
       if b then Ok (Goto (f, target), st) else Ok (Next f, st)
+  (* ref: 8.3 The for statement — obtain the iterator the loop (or a
+     comprehension) will consume. *)
   | Get_iter v ->
       let* (v, f), st = op1 st f v in
       let* it, st = py_iter st v in
       Ok (Next (push f it), st)
+  (* ref: 8.3 — one loop step: push the next item, or jump past the loop body
+     when the iterator is exhausted. *)
   | For_iter target -> (
       let it = List.hd f.stack in
       let* nx, st = py_next st it in
@@ -3481,6 +3517,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
   | End_for ->
       let _, f = pop f in
       Ok (Next f, st)
+  (* ref: 6.2.9 (yield from) — get the iterator delegated to; a generator is
+     used directly so it can receive sent values. *)
   | Get_yield_from_iter v -> (
       let* (v, f), st = op1 st f v in
       match deref st v with
@@ -3488,10 +3526,13 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       | _ ->
           let* it, st = py_iter st v in
           Ok (Next (push f it), st))
+  (* ref: 7.6 The return statement *)
   | Return v ->
       let* (v, f), st = op1 st f v in
       ignore f;
       Ok (Fin (Returned v), st)
+  (* ref: 6.2.9 / 3.5 — entering a generator/coroutine/async-generator function
+     returns the generator object immediately instead of running the body. *)
   | Return_generator ->
       let kind =
         if Ast.is_async_generator f.code then `Async_gen
@@ -3503,9 +3544,14 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           (Gen { gframe = Some (advance f); gstarted = false; gkind = kind })
       in
       Ok (Fin (Returned g), st)
+  (* ref: 6.2.9 Yield expressions / 7.7 — suspend the frame, handing the value to
+     whoever resumed the generator. *)
   | Yield { v; arg = _ } ->
       let* (v, f), st = op1 st f v in
       Ok (Fin (Yielded (v, advance f)), st)
+  (* ref: 6.2.9 (yield from / await) — drive the sub-iterator on top of stack:
+     forward the sent value, jumping to [on_stop] with its return value when it
+     finishes. *)
   | Send { v; on_stop } -> (
       let* (v, f), st = op1 st f v in
       let receiver = List.hd f.stack in
@@ -3552,10 +3598,15 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           let* (), st = set_exc_chain st excv ~cause:cv ~suppress:true in
           Error (excv, st)
       | _ -> assert false)
+  (* ref: 7.8 / 8.4 — re-raise the exception on top of the stack (the implicit
+     re-raise compiled for finally and unhandled except blocks). *)
   | Reraise _ ->
       let exc, f = pop f in
       ignore f;
       Error (exc, st)
+  (* ref: 8.4 — entering/leaving an except block manages the "current exception"
+     (sys.exc_info, [st.cur_exc]): Push_exc_info saves the old one and installs
+     the caught one; Pop_except restores the saved one. *)
   | Push_exc_info ->
       let v, f = pop f in
       let f = push (push f st.cur_exc) v in
@@ -3563,6 +3614,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
   | Pop_except ->
       let v, f = pop f in
       Ok (Next f, { st with cur_exc = v })
+  (* ref: 8.4 — the `except E` test: does the active exception match the class
+     (or tuple of classes) [pat]? *)
   | Check_exc_match pat ->
       let* (pat, f), st = op1 st f pat in
       let exc = List.hd f.stack in
@@ -3585,6 +3638,9 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       let* cls, st = class_of_value st exc in
       let* res, st = call st exit_func [ cls; exc; None_ ] [] in
       Ok (Next (push f res), st)
+  (* ref: 6.2.5 List displays / 6.2.6 Set displays / 6.2.7 Dictionary displays /
+     6.2.3 (parenthesised forms / tuples) — build a container from its
+     elements. *)
   | Build_tuple vs ->
       let* (vals, f), st = eval_operands st f (Array.to_list vs) in
       Ok (Next (push f (Tuple vals)), st)
@@ -3612,16 +3668,21 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
       in
       let* (), st = fill st vals in
       Ok (Next (push f d), st)
+  (* ref: 2.4.3 Formatted string literals (f-strings) — concatenate the rendered
+     literal/expression pieces. *)
   | Build_string vs ->
       let* (vals, f), st = eval_operands st f (Array.to_list vs) in
       let parts = List.map (function Str s -> s | _ -> "") vals in
       Ok (Next (push f (Str (String.concat "" parts))), st)
+  (* ref: 6.3.3 Slicings — build a slice object from start/stop[/step]. *)
   | Build_slice vs -> (
       let* (vals, f), st = eval_operands st f (Array.to_list vs) in
       match vals with
       | [ a; b ] -> Ok (Next (push f (Slice (a, b, None_))), st)
       | [ a; b; c ] -> Ok (Next (push f (Slice (a, b, c))), st)
       | _ -> assert false)
+  (* ref: 6.2.7 Dictionary displays — a dict literal whose keys are all constants
+     (the keys arrive as one tuple, a CPython optimisation). *)
   | Build_const_key_map { keys; values } -> (
       let* (vals, f), st =
         eval_operands st f (Array.to_list values @ [ keys ])
@@ -3637,6 +3698,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           in
           Ok (Next (push f d), st)
       | _ -> assert false)
+  (* ref: 6.2.4 Displays for lists, sets and dictionaries (comprehensions) — each
+     produced element/pair is appended to the container being built. *)
   | List_append (depth, v) -> (
       let* (v, f), st = op1 st f v in
       match List.nth f.stack (depth - 1) with
@@ -3663,6 +3726,9 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           let* (), st = dict_set st a k v in
           Ok (Next f, st)
       | _ -> assert false)
+  (* ref: 6.2.5–6.2.7 (iterable/dict unpacking in displays, *a / **d) and 6.3.4
+     (call **kwargs) — splice another iterable/mapping into the container being
+     built. *)
   | List_extend (depth, v) -> (
       let* (v, f), st = op1 st f v in
       let* items, st = to_list st v in
@@ -3720,12 +3786,14 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
         let mid, asx = take (List.length rest - after) rest in
         let star, st = alloc st (List mid) in
         Ok (Next { f with stack = bs @ (star :: asx) @ f.stack }, st)
+  (* ref: 2.4.3 Formatted string literals — f"{x}" is format(x, ""); for an
+     instance this calls __format__(""), which only coincides with str(x) for
+     the object default. *)
   | Format_simple v ->
-      (* f"{x}" is format(x, "") — for an instance this calls __format__(""),
-         which only coincides with str(x) for the object default. *)
       let* (v, f), st = op1 st f v in
       let* s, st = Py_str.format_value st v "" in
       Ok (Next (push f (Str s)), st)
+  (* ref: 2.4.3 — f"{x:spec}" is format(x, spec). *)
   | Format_with_spec (v, spec) -> (
       let* (vals, f), st = eval_operands st f [ v; spec ] in
       match vals with
@@ -3733,6 +3801,7 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           let* s, st = Py_str.format_value st v spec in
           Ok (Next (push f (Str s)), st)
       | _ -> assert false)
+  (* ref: 2.4.3 — f-string conversions: !s -> str(), !r -> repr(), !a -> ascii(). *)
   | Convert_value (conv, v) ->
       let* (v, f), st = op1 st f v in
       let* s, st =
@@ -3741,6 +3810,9 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
         | Repr_conv | Ascii_conv -> py_repr st v
       in
       Ok (Next (push f (Str s)), st)
+  (* ref: 8.7 Function definitions / 6.14 Lambdas — wrap a code object in a
+     function bound to the current module globals (defaults/closure/annotations
+     are attached afterward by Set_function_attribute). *)
   | Make_function v -> (
       let* (v, f), st = op1 st f v in
       match v with
@@ -3760,6 +3832,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           in
           Ok (Next (push f fn), st)
       | _ -> raise_py st "TypeError" "MAKE_FUNCTION expects a code object")
+  (* ref: 8.7 Function definitions — attach a just-built function's defaults
+     (8.7), keyword-only defaults, __annotations__, or closure cells (4.2.2). *)
   | Set_function_attribute { attr; v; f = fv } -> (
       let* (vals, f), st = eval_operands st f [ v; fv ] in
       match vals with
@@ -3799,6 +3873,10 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
               Ok (Next (push f fref), heap_set st fa (Func fn))
           | _ -> assert false)
       | _ -> assert false)
+  (* ref: 4.2.2 Resolution of names (closures) — a cell variable shared between a
+     function and its nested functions; Make_cell boxes a local into a cell, and
+     Copy_free_vars binds the enclosing scope's cells as this frame's free
+     variables. *)
   | Make_cell i ->
       let existing = Int_map.find_opt i f.slots in
       let cell, st = alloc st (Cell existing) in
@@ -3815,9 +3893,15 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           f.slots free_slots f.closure
       in
       Ok (Next { f with slots }, st)
+  (* ref: 3.3.3.1 / 8.8 Class definitions — push the __build_class__ builtin that
+     a `class` statement calls to create the class. *)
   | Load_build_class -> Ok (Next (push f (Builtin "__build_class__")), st)
+  (* ref: 7.3 The assert statement — the AssertionError raised on a failed
+     assertion. *)
   | Load_assertion_error ->
       Ok (Next (push f (Ref (builtin_class_addr st "AssertionError"))), st)
+  (* ref: 7.2.2 Annotated assignment statements (PEP 526) — ensure the module/
+     class __annotations__ dict exists for `x: T` annotations. *)
   | Setup_annotations -> (
       let* found, st = dget st f.ns (Str "__annotations__") in
       match found with
@@ -3826,7 +3910,12 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
           let d, st = alloc st (Dict []) in
           let* (), st = dict_set st f.ns (Str "__annotations__") d in
           Ok (Next f, st))
+  (* ref: 8.8 Class definitions — the class-body namespace dict (also a
+     comprehension's enclosing locals). *)
   | Load_locals -> Ok (Next (push f (Ref f.ns)), st)
+  (* ref: 4.2.2 Resolution of names — name access from inside a class body or a
+     comprehension nested in one: look in that namespace first, then fall back to
+     globals/builtins (or, for [..._or_deref], the enclosing closure cell). *)
   | Load_from_dict_or_globals (v, name) -> (
       let* (d, f), st = op1 st f v in
       let* found, st = dget st (addr d) (Str name) in
@@ -3849,11 +3938,17 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
   | Load_fast_and_clear i ->
       let v = Option.value (Int_map.find_opt i f.slots) ~default:Null in
       Ok (Next (push { f with slots = Int_map.remove i f.slots } v), st)
+  (* ref: 7.11 The import statement — not supported (out of scope). *)
   | Import_name _ | Import_from _ ->
       raise_py st "ImportError" "imports are not supported"
+  (* ref: 8.9 Coroutines / 6.2.9.1 (await, async for/with) — not supported (out
+     of scope). *)
   | Get_awaitable _ | Get_aiter _ | Get_anext | End_async_for
   | Before_async_with _ ->
       unsupported st "async"
+  (* ref: 8.5 The with statement — enter a context manager: fetch __exit__/
+     __enter__ (3.3.9 special lookup) and call __enter__; __exit__ is kept on the
+     stack for the cleanup the compiler emits. *)
   | Before_with v -> (
       let* (mgr, f), st = op1 st f v in
       let* exit_m, st = find_dunder st mgr "__exit__" in
@@ -3867,6 +3962,9 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
             (Printf.sprintf
                "'%s' object does not support the context manager protocol"
                (type_name st mgr)))
+  (* ref: 8.6 The match statement (class patterns) — test isinstance, then
+     extract positional sub-patterns via __match_args__ (3.3.10) and the named
+     ones by attribute access; push the captured values or None on no match. *)
   | Match_class { count; subject; cls; names } -> (
       let* (vals, f), st = eval_operands st f [ subject; cls; names ] in
       match vals with
@@ -3919,6 +4017,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
             | Some vs -> Ok (Next (push f (Tuple vs)), st)
             | None -> Ok (Next (push f None_), st))
       | _ -> assert false)
+  (* ref: 8.6 (mapping / sequence patterns) — does the subject match a mapping
+     or sequence pattern? (str/bytes/tuple are not "sequence patterns".) *)
   | Match_mapping ->
       let is_map =
         match deref st (List.hd f.stack) with
@@ -3933,6 +4033,8 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
         | v -> ( match deref st v with Some (List _) -> true | _ -> false)
       in
       Ok (Next (push f (Bool is_seq)), st)
+  (* ref: 8.6 (mapping patterns) — look up the required keys in the subject
+     mapping, pushing their values (or None if any key is missing). *)
   | Match_keys -> (
       let keys = List.hd f.stack and subject = List.nth f.stack 1 in
       match (keys, deref st subject) with
@@ -3952,6 +4054,7 @@ and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
                    (match gathered with Some vs -> Tuple vs | None -> None_)),
               st )
       | _ -> Ok (Next (push f None_), st))
+  (* ref: 8.6 (sequence patterns) — len(subject), to check a pattern's arity. *)
   | Get_len ->
       let* n, st = py_len st (List.hd f.stack) in
       Ok (Next (push f (Int (Z.of_int n))), st)
@@ -3964,6 +4067,9 @@ and dedup_set st vals : value list r =
       Ok ((if m then acc else acc @ [ v ]), st))
     [] vals
 
+(* ref: 7.8 The raise statement — coerce the raised object to an exception
+   instance: a class is instantiated, an instance is used as-is, anything else is
+   a TypeError. *)
 and exception_instance st (v : value) : value r =
   match deref st v with
   | Some (Class _) -> call st v [] []
@@ -3985,6 +4091,8 @@ and set_exc_chain st excv ~cause ~suppress : unit r =
   let* (), st = set_exc_attr st excv "__cause__" cause in
   set_exc_attr st excv "__suppress_context__" (Bool suppress)
 
+(* ref: the built-in type() / the __class__ attribute (3.2.8.2) — the type
+   object of a value. *)
 and class_of_value st (v : value) : value r =
   match deref st v with
   | Some (Instance { cls; _ }) -> Ok (Ref cls, st)
