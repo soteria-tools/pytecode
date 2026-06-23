@@ -259,6 +259,8 @@ let rec str_method st meth args : value r =
       Ok (Str out, st)
   | _ -> no_such ()
 
+(* ref: str.format() / the "Format String Syntax" — fill {}, {n} and {name}
+   replacement fields (each is format(arg, spec), via [format_value]). *)
 and str_format st template args : string r =
   let n = String.length template in
   let rec go st i auto acc =
@@ -288,6 +290,9 @@ and str_format st template args : string r =
   in
   go st 0 0 ""
 
+(* ref: "printf-style String Formatting" (str % args) — each %-spec is translated
+   to the equivalent format() mini-language spec and rendered via [format_value],
+   with the r/a/c/i/u conversions and %(key) mapping access handled here. *)
 and printf_format st fmt arg : value r =
   (* a tuple supplies positional args (and is checked for leftovers); any other
      value is a single positional arg that %(key) specifiers also index into *)
