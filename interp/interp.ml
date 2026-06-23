@@ -409,11 +409,13 @@ and py_compare st (op : Phir.cmpop) a b : bool r =
             set_subset st ys xs
         | _ -> le_fallback_ge st a b)
 
+(* ref: 6.10.1 — the <= / >= fallback for non-numeric, non-set operands: defer to
+   __le__/__ge__ for instances; for plain builtins, a<=b is just "not (b<a)"
+   (which the caller has already established here). *)
 and le_fallback st a b =
   if is_instance_value st a || is_instance_value st b then
     instance_order st a b "__le__" "__ge__" "<="
   else Ok (true, st)
-(* not (b < a) was already established *)
 
 and le_fallback_ge st a b =
   if is_instance_value st a || is_instance_value st b then
@@ -1669,8 +1671,8 @@ and builtin_base_tag st cls_addr : string option =
     (fun a -> match (cls_of st a).builtin with Some "object" -> None | t -> t)
     (cls_of st cls_addr).mro
 
-(* the built-in types whose subclassing is modelled (bool is excluded — CPython
-   forbids subclassing it) *)
+(* ref: 3.2 — the built-in types whose subclassing is modelled (bool is excluded:
+   CPython forbids subclassing it). *)
 and is_native_tag = function
   | "dict" | "list" | "set" | "frozenset" | "int" | "float" | "str" | "tuple"
   | "bytes" ->
@@ -1963,6 +1965,8 @@ and union_members st v =
   | Ref a -> ( match heap_get st a with Union_type ms -> ms | _ -> [ v ])
   | _ -> [ v ]
 
+(* ref: 6.7 (PEP 604) — build a types.UnionType from two operands, flattening
+   nested unions, deduping members, and collapsing a single member to itself. *)
 and build_union st a b : value r =
   let raw = union_members st a @ union_members st b in
   (* dedup preserving order (classes compare by heap address) *)
@@ -3191,8 +3195,9 @@ and run_frame st (f : frame) : frame_outcome r =
 
 (* The bytecode interpreter core: execute one Phir/CPython instruction, yielding
    the next frame ([Next]), a jump ([Goto]) or a frame result ([Fin]). Each case
-   maps an opcode to its expression/statement semantics; see the per-case ref
-   pointers (the surface construct each opcode came from). *)
+   maps an opcode to its semantics; the per-case "ref:" pointers name the surface
+   construct it came from (chapters 6 Expressions, 7 Simple statements, 8
+   Compound statements). *)
 and exec_instr st (f : frame) (ins : Phir.instr) : istep r =
   let op1 st f v =
     let* (vals, f), st = eval_operands st f [ v ] in

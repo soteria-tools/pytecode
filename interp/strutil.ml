@@ -1,4 +1,11 @@
 (* Pure string helpers (no recursion into the interpreter knot).
+
+   These are the byte/character-level mechanics behind specific str/bytes
+   methods (each function's comment names the method it serves, e.g. str.title,
+   str.istitle, str.expandtabs, str.translate); the Python-observable behaviour
+   and its reference pointers live at the method level — see [Py_str] / [Py_bytes]
+   and the Library Reference "Text/Binary Sequence Types".
+
    [open]ed by [Interp], [Py_str] and [Py_bytes]. *)
 
 open Value
